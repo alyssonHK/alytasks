@@ -120,6 +120,8 @@ let canvasState = {
 let tasksCache: Task[] = [];
 let nodesCache: { [taskId: string]: HTMLElement } = {};
 let advancedTaskFilter = 'todas';
+// Cards livres do canvas (não tarefas)
+let freeCanvasCards: { id: string, x: number, y: number, text: string }[] = [];
 
 // --- Listener Management ---
 let unsubs: { [key: string]: (() => void) | null } = {
@@ -1528,5 +1530,113 @@ function showConnectionCommentInput(sourceId: string, targetId: string, x: numbe
     setTimeout(() => input.focus(), 30);
     dom.taskCanvasContainer.appendChild(input);
 }
+
+// Cards livres do canvas (não tarefas)
+let freeCanvasCards: { id: string, x: number, y: number, text: string }[] = [];
+
+function renderFreeCanvasCards() {
+    // Remove todos os cards livres antigos
+    const old = dom.taskCanvas.querySelectorAll('.canvas-free-card');
+    old.forEach(el => el.remove());
+    freeCanvasCards.forEach(card => {
+        const el = document.createElement('div');
+        el.className = 'canvas-free-card';
+        el.style.left = card.x + 'px';
+        el.style.top = card.y + 'px';
+        el.textContent = card.text || 'Novo card';
+        el.dataset.id = card.id;
+        el.style.position = 'absolute';
+        el.style.border = '2px solid #2563eb';
+        el.style.background = '#f8fafc';
+        el.style.color = '#1e293b';
+        el.style.borderRadius = '0.75rem';
+        el.style.padding = '10px 18px';
+        el.style.fontSize = '1rem';
+        el.style.minWidth = '120px';
+        el.style.cursor = 'move';
+        el.style.zIndex = '50';
+        // Duplo clique para editar
+        el.ondblclick = (e) => {
+            e.stopPropagation();
+            showEditFreeCardInput(card.id, card.x, card.y, card.text);
+        };
+        // Drag
+        let isDragging = false, startX = 0, startY = 0, origX = 0, origY = 0;
+        el.onmousedown = (e) => {
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            origX = card.x;
+            origY = card.y;
+            document.onmousemove = (ev) => {
+                if (isDragging) {
+                    card.x = origX + (ev.clientX - startX);
+                    card.y = origY + (ev.clientY - startY);
+                    el.style.left = card.x + 'px';
+                    el.style.top = card.y + 'px';
+                }
+            };
+            document.onmouseup = () => {
+                isDragging = false;
+                document.onmousemove = null;
+                document.onmouseup = null;
+            };
+        };
+        dom.taskCanvas.appendChild(el);
+    });
+}
+function showEditFreeCardInput(id: string, x: number, y: number, initial: string) {
+    const old = document.getElementById('canvas-free-card-input');
+    if (old) old.remove();
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = initial;
+    input.id = 'canvas-free-card-input';
+    input.style.position = 'absolute';
+    input.style.left = (x - 10) + 'px';
+    input.style.top = (y - 10) + 'px';
+    input.style.width = '160px';
+    input.style.zIndex = '10000';
+    input.style.background = '#fff';
+    input.style.border = '2px solid #2563eb';
+    input.style.borderRadius = '0.75rem';
+    input.style.padding = '6px 12px';
+    input.style.fontSize = '1rem';
+    input.style.boxShadow = '0 2px 8px rgba(37,99,235,0.08)';
+    input.style.opacity = '0.98';
+    input.style.outline = 'none';
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            const card = freeCanvasCards.find(c => c.id === id);
+            if (card) card.text = input.value.trim();
+            input.remove();
+            renderFreeCanvasCards();
+        } else if (e.key === 'Escape') {
+            input.remove();
+        }
+    });
+    setTimeout(() => input.focus(), 30);
+    dom.taskCanvasContainer.appendChild(input);
+}
+// Adicionar evento de duplo clique no canvas para criar card livre
+if (dom.taskCanvas) {
+    dom.taskCanvas.addEventListener('dblclick', (e: MouseEvent) => {
+        // Só cria se não clicar em cima de um card de tarefa
+        const target = e.target as HTMLElement;
+        if (target.classList.contains('canvas-task-node')) return;
+        const rect = dom.taskCanvas.getBoundingClientRect();
+        const x = (e.clientX - rect.left);
+        const y = (e.clientY - rect.top);
+        freeCanvasCards.push({ id: 'free_' + Date.now(), x, y, text: '' });
+        renderFreeCanvasCards();
+        showEditFreeCardInput(freeCanvasCards[freeCanvasCards.length - 1].id, x, y, '');
+    });
+}
+// Renderizar os cards livres sempre que o canvas for redesenhado
+const oldDrawAllLines = drawAllLines;
+drawAllLines = function() {
+    oldDrawAllLines();
+    renderFreeCanvasCards();
+};
 
 start();
