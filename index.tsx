@@ -116,6 +116,8 @@ let canvasState = {
     zoom: 1,
     nodeInitialX: 0,
     nodeInitialY: 0,
+    linkStartSide: null as 'top' | 'bottom' | 'left' | 'right' | null,
+    linkTargetSide: null as 'top' | 'bottom' | 'left' | 'right' | null,
 };
 let tasksCache: Task[] = [];
 let freeCardsCache: FreeCard[] = [];
@@ -896,8 +898,22 @@ function renderCanvasNode(task: Task) {
 
     node.innerHTML = `
         <p class="canvas-task-node-text">${task.text}</p>
-        <div class="canvas-task-node-link-handle"></div>
     `;
+
+    node.addEventListener('mousedown', (e) => {
+        const isHandle = (e.target as HTMLElement)?.classList?.contains('canvas-task-node-link-handle');
+        if (isHandle || e.shiftKey) {
+            e.stopPropagation();
+            canvasState.isLinking = true;
+            canvasState.linkStartNodeId = task.id;
+            const side = getCardSide(node, e.clientX, e.clientY);
+            canvasState.linkStartSide = side;
+            dom.taskCanvasContainer.classList.add('linking-mode');
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            line.setAttribute('class', 'linking-line');
+            dom.canvasLinesSvg.appendChild(line);
+        }
+    });
 
     nodesCache[task.id] = node;
     dom.taskCanvas.appendChild(node);
@@ -910,22 +926,109 @@ function renderCanvasFreeCardNode(freeCard: FreeCard) {
     node.dataset.type = 'free-card';
     node.style.left = `${freeCard.x || 0}px`;
     node.style.top = `${freeCard.y || 0}px`;
+    node.tabIndex = 0; // Permite foco para capturar Delete
 
     node.innerHTML = `
         <p class="canvas-free-card-node-text">${freeCard.text}</p>
-        <div class="canvas-free-card-node-link-handle"></div>
     `;
+
+    // Seleção do card livre ao clicar
+    node.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Remove seleção de outros cards livres
+        document.querySelectorAll('.canvas-free-card-node.selected').forEach(el => el.classList.remove('selected'));
+        // Seleciona este card
+        node.classList.add('selected');
+        node.focus(); // Dá foco para capturar Delete
+    });
+
+    // Captura Delete para excluir o card selecionado
+    node.addEventListener('keydown', async (e) => {
+        if ((e.key === 'Delete' || e.key === 'Del') && node.classList.contains('selected')) {
+            e.preventDefault();
+            if (freeCardsCollectionRef) {
+                await deleteDoc(doc(freeCardsCollectionRef, freeCard.id));
+                showToast('Card livre excluído!');
+            }
+        }
+    });
+
+    node.addEventListener('mousedown', (e) => {
+        const isHandle = (e.target as HTMLElement)?.classList?.contains('canvas-free-card-node-link-handle');
+        const isTextarea = (e.target as HTMLElement)?.tagName === 'TEXTAREA';
+        if (isTextarea) return; // não faz nada se for edição
+        // Iniciar ligação se for handle OU se segurar Shift
+        if (isHandle || e.shiftKey) {
+            e.stopPropagation();
+            canvasState.isLinking = true;
+            canvasState.linkStartNodeId = freeCard.id;
+            // Detecta o lado do card
+            const side = getCardSide(node, e.clientX, e.clientY);
+            canvasState.linkStartSide = side;
+            dom.taskCanvasContainer.classList.add('linking-mode');
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            line.setAttribute('class', 'linking-line');
+            dom.canvasLinesSvg.appendChild(line);
+        }
+        // Caso contrário, drag normal (movimentação) será tratado pelo setupCanvasEventListeners
+    });
+
+    // Edição inline ao dar duplo clique
+    node.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        const textEl = node.querySelector('.canvas-free-card-node-text') as HTMLElement;
+        if (!textEl) return;
+        const oldText = textEl.textContent || '';
+        const textarea = document.createElement('textarea');
+        textarea.value = oldText;
+        textarea.className = 'w-full p-2 border rounded bg-white text-blue-900';
+        textarea.style.fontWeight = '500';
+        textarea.style.fontSize = '1rem';
+        textarea.style.resize = 'none';
+        textarea.style.minHeight = '48px';
+        textEl.replaceWith(textarea);
+        textarea.focus();
+        textarea.select();
+        // Salvar ao sair do foco ou pressionar Enter
+        const save = async () => {
+            const newText = textarea.value.trim();
+            if (newText && newText !== oldText && freeCardsCollectionRef) {
+                await updateDoc(doc(freeCardsCollectionRef, freeCard.id), { text: newText });
+            }
+            // Volta para o modo texto
+            const newTextEl = document.createElement('p');
+            newTextEl.className = 'canvas-free-card-node-text';
+            newTextEl.textContent = newText || oldText;
+            textarea.replaceWith(newTextEl);
+        };
+        textarea.addEventListener('blur', save);
+        textarea.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter' && !ev.shiftKey) {
+                ev.preventDefault();
+                textarea.blur();
+            }
+            if (ev.key === 'Escape') {
+                // Cancela edição
+                const newTextEl = document.createElement('p');
+                newTextEl.className = 'canvas-free-card-node-text';
+                newTextEl.textContent = oldText;
+                textarea.replaceWith(newTextEl);
+            }
+        });
+    });
 
     freeCardNodesCache[freeCard.id] = node;
     dom.taskCanvas.appendChild(node);
 }
+
+// Adicione ao CSS:
+// .canvas-free-card-node.selected { box-shadow: 0 0 0 3px #2563eb, 0 2px 4px rgba(0,0,0,0.08); border-color: #2563eb; }
 
 // Comentários das conexões (em memória)
 const connectionComments: { [key: string]: string } = {};
 
 function drawAllLines() {
     if (!dom.canvasLinesSvg) return;
-    // console.log("[Canvas Draw] drawAllLines called.");
     const linkingLine = dom.canvasLinesSvg.querySelector('.linking-line');
     dom.canvasLinesSvg.innerHTML = '';
     if (linkingLine) dom.canvasLinesSvg.appendChild(linkingLine);
@@ -936,19 +1039,56 @@ function drawAllLines() {
             task.connections.forEach(conn => {
                 let targetId: string;
                 let commentText: string | undefined;
+                let sourceSide: string | undefined;
+                let targetSide: string | undefined;
                 if (typeof conn === 'string') {
                     targetId = conn;
                     commentText = undefined;
+                    sourceSide = 'right';
+                    targetSide = 'left';
                 } else {
                     targetId = conn.targetId;
                     commentText = conn.comment;
+                    sourceSide = conn.sourceSide || 'right';
+                    targetSide = conn.targetSide || 'left';
                 }
                 const sourceNode = nodesCache[task.id];
                 const targetNode = nodesCache[targetId] || freeCardNodesCache[targetId];
                 if (sourceNode && targetNode) {
                     const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-                    const line = createSvgLine(sourceNode, targetNode);
+                    const line = createSvgLine(sourceNode, targetNode, false, undefined, false, sourceSide, targetSide);
+                    const hitArea = line.cloneNode() as SVGPathElement;
+                    hitArea.setAttribute('stroke', 'rgba(0,0,0,0)');
+                    hitArea.setAttribute('stroke-width', '16');
+                    hitArea.setAttribute('pointer-events', 'stroke');
+                    hitArea.setAttribute('class', (line.getAttribute('class') || '') + ' hit-area');
+                    hitArea.setAttribute('tabindex', '0'); // Permite foco
+                    group.appendChild(hitArea);
                     group.appendChild(line);
+                    // Eventos de seleção/deleção devem ser adicionados ao hitArea, mas a seleção visual é aplicada na linha real.
+                    hitArea.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        document.querySelectorAll('.canvas-line.selected, .canvas-free-card-line.selected').forEach(el => el.classList.remove('selected'));
+                        line.classList.add('selected');
+                        line.tabIndex = 0;
+                        hitArea.focus(); // Garante foco para Delete
+                    });
+                    hitArea.addEventListener('keydown', async (e) => {
+                        if ((e.key === 'Delete' || e.key === 'Del') && line.classList.contains('selected')) {
+                            if (tasksCollectionRef) {
+                                const taskDocRef = doc(tasksCollectionRef, task.id);
+                                const updatedConnections = (task.connections || []).filter((c: any) => {
+                                    if (typeof c === 'string') return c !== targetId;
+                                    return c.targetId !== targetId;
+                                });
+                                await updateDoc(taskDocRef, { connections: updatedConnections });
+                                showToast('Conexão removida!');
+                            }
+                        }
+                    });
+                    hitArea.addEventListener('focus', () => line.classList.add('selected'));
+                    hitArea.addEventListener('blur', () => line.classList.remove('selected'));
+
                     // Comentário da conexão
                     if (commentText) {
                         const sourceX = sourceNode.offsetLeft + sourceNode.offsetWidth;
@@ -1048,20 +1188,56 @@ function drawAllLines() {
             freeCard.connections.forEach(conn => {
                 let targetId: string;
                 let commentText: string | undefined;
+                let sourceSide: string | undefined;
+                let targetSide: string | undefined;
                 if (typeof conn === 'string') {
                     targetId = conn;
                     commentText = undefined;
+                    sourceSide = 'right';
+                    targetSide = 'left';
                 } else {
                     targetId = conn.targetId;
                     commentText = conn.comment;
+                    sourceSide = conn.sourceSide || 'right';
+                    targetSide = conn.targetSide || 'left';
                 }
                 const sourceNode = freeCardNodesCache[freeCard.id];
                 const targetNode = nodesCache[targetId] || freeCardNodesCache[targetId];
                 if (sourceNode && targetNode) {
                     const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-                    const line = createSvgLine(sourceNode, targetNode, false, undefined, true);
+                    const line = createSvgLine(sourceNode, targetNode, false, undefined, true, sourceSide, targetSide);
+                    const hitArea = line.cloneNode() as SVGPathElement;
+                    hitArea.setAttribute('stroke', 'rgba(0,0,0,0)');
+                    hitArea.setAttribute('stroke-width', '16');
+                    hitArea.setAttribute('pointer-events', 'stroke');
+                    hitArea.setAttribute('class', (line.getAttribute('class') || '') + ' hit-area');
+                    hitArea.setAttribute('tabindex', '0'); // Permite foco
+                    group.appendChild(hitArea);
                     group.appendChild(line);
-                    
+                    // Eventos de seleção/deleção devem ser adicionados ao hitArea, mas a seleção visual é aplicada na linha real.
+                    hitArea.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        document.querySelectorAll('.canvas-line.selected, .canvas-free-card-line.selected').forEach(el => el.classList.remove('selected'));
+                        line.classList.add('selected');
+                        line.tabIndex = 0;
+                        hitArea.focus(); // Garante foco para Delete
+                    });
+                    hitArea.addEventListener('keydown', async (e) => {
+                        if ((e.key === 'Delete' || e.key === 'Del') && line.classList.contains('selected')) {
+                            if (freeCardsCollectionRef) {
+                                const freeCardDocRef = doc(freeCardsCollectionRef, freeCard.id);
+                                const updatedConnections = (freeCard.connections || []).filter((c: any) => {
+                                    if (typeof c === 'string') return c !== targetId;
+                                    return c.targetId !== targetId;
+                                });
+                                await updateDoc(freeCardDocRef, { connections: updatedConnections });
+                                showToast('Conexão removida!');
+                            }
+                        }
+                    });
+                    hitArea.addEventListener('focus', () => line.classList.add('selected'));
+                    hitArea.addEventListener('blur', () => line.classList.remove('selected'));
+
                     // Comentário da conexão
                     if (commentText) {
                         const sourceX = sourceNode.offsetLeft + sourceNode.offsetWidth;
@@ -1153,13 +1329,13 @@ function drawAllLines() {
     });
 }
 
-function createSvgLine(sourceNode: HTMLElement, targetNode: HTMLElement, isLinkingLine = false, customTargetPoint?: {x: number, y: number}, isFreeCard = false) {
+function createSvgLine(sourceNode: HTMLElement, targetNode: HTMLElement, isLinkingLine = false, customTargetPoint?: {x: number, y: number}, isFreeCard = false, sourceSide?: string, targetSide?: string) {
     // Adiciona marker de seta ao SVG se ainda não existir
     if (dom.canvasLinesSvg && !dom.canvasLinesSvg.querySelector('marker#arrowhead')) {
         const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
         defs.innerHTML = `
-            <marker id="arrowhead" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto">
-                <polygon points="0 0, 6 2, 0 4" fill="#6366f1"/>
+            <marker id="arrowhead" markerWidth="2" markerHeight="1.2" refX="2" refY="0.6" orient="auto">
+                <polygon points="0 0, 2 0.6, 0 1.2" fill="#6366f1"/>
             </marker>
         `;
         dom.canvasLinesSvg.prepend(defs);
@@ -1171,26 +1347,44 @@ function createSvgLine(sourceNode: HTMLElement, targetNode: HTMLElement, isLinki
         if (defs) {
             const blueArrow = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
             blueArrow.setAttribute('id', 'arrowhead-blue');
-            blueArrow.setAttribute('markerWidth', '6');
-            blueArrow.setAttribute('markerHeight', '4');
-            blueArrow.setAttribute('refX', '6');
-            blueArrow.setAttribute('refY', '2');
+            blueArrow.setAttribute('markerWidth', '2');
+            blueArrow.setAttribute('markerHeight', '1.2');
+            blueArrow.setAttribute('refX', '2');
+            blueArrow.setAttribute('refY', '0.6');
             blueArrow.setAttribute('orient', 'auto');
-            blueArrow.innerHTML = '<polygon points="0 0, 6 2, 0 4" fill="#3b82f6"/>';
+            blueArrow.innerHTML = '<polygon points="0 0, 2 0.6, 0 1.2" fill="#3b82f6"/>';
             defs.appendChild(blueArrow);
         }
     }
     
-    const sourceX = sourceNode.offsetLeft + sourceNode.offsetWidth;
-    const sourceY = sourceNode.offsetTop + sourceNode.offsetHeight / 2;
-    let targetX, targetY;
+    // Calcula o ponto de origem e destino conforme o lado
+    function getPoint(node: HTMLElement, side: string) {
+        const x = node.offsetLeft;
+        const y = node.offsetTop;
+        const w = node.offsetWidth;
+        const h = node.offsetHeight;
+        switch (side) {
+            case 'top': return { x: x + w/2, y: y };
+            case 'bottom': return { x: x + w/2, y: y + h };
+            case 'left': return { x: x, y: y + h/2 };
+            case 'right': return { x: x + w, y: y + h/2 };
+            default: return { x: x + w, y: y + h/2 };
+        }
+    }
+    
+    let sourceX, sourceY, targetX, targetY;
     if (customTargetPoint) {
+        sourceX = getPoint(sourceNode, sourceSide || 'right').x;
+        sourceY = getPoint(sourceNode, sourceSide || 'right').y;
         targetX = customTargetPoint.x;
         targetY = customTargetPoint.y;
     } else {
-        targetX = targetNode.offsetLeft;
-        targetY = targetNode.offsetTop + targetNode.offsetHeight / 2;
+        sourceX = getPoint(sourceNode, sourceSide || 'right').x;
+        sourceY = getPoint(sourceNode, sourceSide || 'right').y;
+        targetX = getPoint(targetNode, targetSide || 'left').x;
+        targetY = getPoint(targetNode, targetSide || 'left').y;
     }
+    
     const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     const controlPointOffset = Math.max(50, Math.abs(targetX - sourceX) * 0.3);
     line.setAttribute('d', `M ${sourceX} ${sourceY} C ${sourceX + controlPointOffset} ${sourceY}, ${targetX - controlPointOffset} ${targetY}, ${targetX} ${targetY}`);
@@ -1282,6 +1476,11 @@ const setupAppEventListeners = () => {
         if (freeCardPopup && !freeCardPopup.classList.contains('hidden') && !freeCardPopup.contains(target)) {
             hideFreeCardPopup();
         }
+        
+        // Remover seleção de cards livres se clicar fora
+        if (!(e.target as HTMLElement).closest('.canvas-free-card-node')) {
+            document.querySelectorAll('.canvas-free-card-node.selected').forEach(el => el.classList.remove('selected'));
+        }
     });
     eventManager.add(dom.logoutBtn, 'click', async () => { await signOut(auth); dom.userMenuDropdown.classList.add('hidden'); });
     eventManager.add(window, 'online', updateConnectionStatus);
@@ -1352,6 +1551,8 @@ function setupCanvasEventListeners() {
             e.stopPropagation();
             canvasState.isLinking = true;
             canvasState.linkStartNodeId = taskNode.dataset.id || null;
+            const side = getCardSide(taskNode, e.clientX, e.clientY);
+            canvasState.linkStartSide = side;
             container.classList.add('linking-mode');
             const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
             line.setAttribute('class', 'linking-line');
@@ -1360,6 +1561,8 @@ function setupCanvasEventListeners() {
             e.stopPropagation();
             canvasState.isLinking = true;
             canvasState.linkStartNodeId = freeCardNode.dataset.id || null;
+            const side = getCardSide(freeCardNode, e.clientX, e.clientY);
+            canvasState.linkStartSide = side;
             container.classList.add('linking-mode');
             const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
             line.setAttribute('class', 'linking-line');
@@ -1383,11 +1586,11 @@ function setupCanvasEventListeners() {
 
     const onMouseMove = (e: MouseEvent) => {
         if (canvasState.isLinking && canvasState.linkStartNodeId) {
-            const startNode = nodesCache[canvasState.linkStartNodeId];
+            const startNode = nodesCache[canvasState.linkStartNodeId] || freeCardNodesCache[canvasState.linkStartNodeId];
             if(!startNode) return;
 
-            const x1 = startNode.offsetLeft + startNode.offsetWidth;
-            const y1 = startNode.offsetTop + startNode.offsetHeight / 2;
+            // Detecta o lado de origem
+            const sourceSide = canvasState.linkStartSide || 'right';
 
             const containerRect = container.getBoundingClientRect();
             const mouseScreenX = e.clientX - containerRect.left;
@@ -1397,8 +1600,29 @@ function setupCanvasEventListeners() {
 
             const linkingLine = dom.canvasLinesSvg.querySelector('.linking-line') as SVGPathElement;
             if (linkingLine) {
-                 const controlPointOffset = Math.max(50, Math.abs(x2 - x1) * 0.3);
-                 linkingLine.setAttribute('d', `M ${x1} ${y1} C ${x1 + controlPointOffset} ${y1}, ${x2 - controlPointOffset} ${y2}, ${x2} ${y2}`);
+                // Calcula o ponto de origem baseado no lado
+                function getPoint(node: HTMLElement, side: string) {
+                    const x = node.offsetLeft;
+                    const y = node.offsetTop;
+                    const w = node.offsetWidth;
+                    const h = node.offsetHeight;
+                    switch (side) {
+                        case 'top': return { x: x + w/2, y: y };
+                        case 'bottom': return { x: x + w/2, y: y + h };
+                        case 'left': return { x: x, y: y + h/2 };
+                        case 'right': return { x: x + w, y: y + h/2 };
+                        default: return { x: x + w, y: y + h/2 };
+                    }
+                }
+                
+                const sourcePoint = getPoint(startNode, sourceSide);
+                const x1 = sourcePoint.x;
+                const y1 = sourcePoint.y;
+                
+                // Desenha a linha curva
+                const controlPointOffset = Math.max(50, Math.abs(x2 - x1) * 0.3);
+                const pathD = `M ${x1} ${y1} C ${x1 + controlPointOffset} ${y1}, ${x2 - controlPointOffset} ${y2}, ${x2} ${y2}`;
+                linkingLine.setAttribute('d', pathD);
             }
         } else if (canvasState.isDragging && canvasState.draggedNode) {
             closeCanvasPopup();
@@ -1423,28 +1647,33 @@ function setupCanvasEventListeners() {
             const targetNodeEl = targetTaskNode || targetFreeCardNode;
 
             if (canvasState.isLinking && canvasState.linkStartNodeId) {
-                console.log(`[Canvas] Linking ended. Start node: ${canvasState.linkStartNodeId}`);
                 const linkingLine = dom.canvasLinesSvg.querySelector('.linking-line');
                 if (linkingLine) linkingLine.remove();
 
                 if (targetNodeEl && targetNodeEl.dataset.id !== canvasState.linkStartNodeId) {
                     const targetId = targetNodeEl.dataset.id;
                     const isStartNodeFreeCard = canvasState.linkStartNodeId && freeCardNodesCache[canvasState.linkStartNodeId];
-                    
+                    // Detecta o lado do destino
+                    const targetSide = getCardSide(targetNodeEl, e.clientX, e.clientY);
+                    // Salva temporariamente para desenhar a linha corretamente
+                    canvasState.linkTargetSide = targetSide;
+
                     if (targetId) {
+                        const connObj = {
+                            targetId,
+                            sourceSide: canvasState.linkStartSide || 'right',
+                            targetSide: targetSide || 'left'
+                        };
                         if (isStartNodeFreeCard && freeCardsCollectionRef) {
                             await updateDoc(doc(freeCardsCollectionRef, canvasState.linkStartNodeId), {
-                                connections: arrayUnion(targetId)
+                                connections: arrayUnion(connObj)
                             });
                         } else if (tasksCollectionRef) {
                             await updateDoc(doc(tasksCollectionRef, canvasState.linkStartNodeId), {
-                                connections: arrayUnion(targetId)
+                                connections: arrayUnion(connObj)
                             });
                         }
-                        console.log(`[Canvas] Firestore update successful.`);
                     }
-                } else {
-                    console.log(`[Canvas] No valid target node found.`);
                 }
             } else if (canvasState.isDragging && canvasState.draggedNode) {
                 const nodeId = canvasState.draggedNode.dataset.id;
@@ -1473,7 +1702,6 @@ function setupCanvasEventListeners() {
             console.error("Error during canvas mouseup operation:", error);
             showToast("Falha ao criar conexão. Verifique o console para detalhes.");
         } finally {
-            // This block ALWAYS runs, ensuring the UI state is never stuck.
             if (canvasState.isDragging && canvasState.draggedNode) {
                 canvasState.draggedNode.style.zIndex = '10';
             }
@@ -1485,12 +1713,13 @@ function setupCanvasEventListeners() {
                 if (linkingLine) linkingLine.remove();
                 container.classList.remove('linking-mode');
             }
-            
             canvasState.isLinking = false;
             canvasState.isDragging = false;
             canvasState.isPanning = false;
             canvasState.draggedNode = null;
             canvasState.linkStartNodeId = null;
+            canvasState.linkStartSide = null;
+            canvasState.linkTargetSide = null;
         }
     };
     
@@ -1555,6 +1784,8 @@ const cleanupApp = () => {
         zoom: 1,
         nodeInitialX: 0,
         nodeInitialY: 0,
+        linkStartSide: null as 'top' | 'bottom' | 'left' | 'right' | null,
+        linkTargetSide: null as 'top' | 'bottom' | 'left' | 'right' | null,
     };
     setButtonsDisabled(true);
 };
@@ -1923,6 +2154,24 @@ function showConnectionCommentInput(sourceId: string, targetId: string, x: numbe
     });
     setTimeout(() => input.focus(), 30);
     dom.taskCanvasContainer.appendChild(input);
+}
+
+// Função utilitária para detectar o lado do card
+function getCardSide(node: HTMLElement, mouseX: number, mouseY: number): 'top' | 'bottom' | 'left' | 'right' {
+    const rect = node.getBoundingClientRect();
+    const x = mouseX - rect.left;
+    const y = mouseY - rect.top;
+    const w = rect.width;
+    const h = rect.height;
+    const topDist = y;
+    const bottomDist = h - y;
+    const leftDist = x;
+    const rightDist = w - x;
+    const min = Math.min(topDist, bottomDist, leftDist, rightDist);
+    if (min === topDist) return 'top';
+    if (min === bottomDist) return 'bottom';
+    if (min === leftDist) return 'left';
+    return 'right';
 }
 
 start();

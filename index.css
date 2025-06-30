@@ -409,3 +409,25 @@ svg#canvas-lines-svg g {
   display: flex;
   gap: 0.5rem;
 }
+
+.canvas-free-card-node.selected {
+  box-shadow: 0 0 0 3px #2563eb, 0 2px 4px rgba(0,0,0,0.08);
+  border-color: #2563eb;
+}
+
+.canvas-line.selected, .canvas-free-card-line.selected {
+  stroke: #2563eb !important;
+  stroke-width: 4 !important;
+  filter: drop-shadow(0 0 4px #2563eb88);
+}
+.hit-area {
+  pointer-events: stroke;
+  stroke: rgba(0,0,0,0) !important;
+  stroke-width: 16 !important;
+  filter: none !important;
+}
+
+.canvas-line:focus, .canvas-free-card-line:focus, .hit-area:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
