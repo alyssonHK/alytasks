@@ -193,7 +193,7 @@ function displayCurrentDate() {
     if(dom.currentDate) dom.currentDate.textContent = new Date().toLocaleDateString('pt-BR', { dateStyle: 'full' });
 }
 function updateToggleCompletedButton() {
-     if(dom.toggleCompletedBtn) dom.toggleCompletedBtn.innerHTML = showCompleted ? `<i class="fas fa-eye-slash"></i> Ocultar Concluídas` : `<i class="fas fa-eye"></i> Mostrar Concluídas`;
+     if(dom.toggleCompletedBtn) dom.toggleCompletedBtn.innerHTML = showCompleted ? `<i class="fas fa-eye-slash"></i>` : `<i class="fas fa-eye"></i>`;
 }
 
 function updateConnectionStatus() {
@@ -430,6 +430,10 @@ function openTaskDetailModal(taskId: string, taskTitle: string) {
     };
     
     dom.taskDetailModal.classList.remove('hidden');
+
+    // Preencher select de categoria
+    const task = tasksCache.find(t => t.id === taskId);
+    fillDetailCategorySelect(task?.category || null);
 }
 
 function closeTaskDetailModal() {
@@ -889,7 +893,7 @@ async function openCanvasPopup(taskId: string, nodeElement: HTMLElement) {
 
     const containerRect = dom.taskCanvasContainer.getBoundingClientRect();
     const nodeRect = nodeElement.getBoundingClientRect();
-    dom.canvasTaskPopup.style.left = `${nodeRect.right - containerRect.left + 15}px`;
+    dom.canvasTaskPopup.style.left = `${nodeRect.right - containerRect.left + 5}px`;
     dom.canvasTaskPopup.style.top = `${nodeRect.top - containerRect.top}px`;
     dom.canvasTaskPopup.classList.remove('hidden');
 
@@ -949,6 +953,24 @@ const setupAppEventListeners = () => {
         eventManager.add(dom.userMenuTrigger, 'click', (e: MouseEvent) => {
             e.stopPropagation();
             dom.userMenuDropdown.classList.toggle('hidden');
+        });
+    }
+    // Evento para abrir/fechar o popup de nova tarefa
+    const openTaskPopupBtn = document.getElementById('open-task-popup-btn');
+    const taskPopup = document.getElementById('task-popup');
+    const closeTaskPopupBtn = document.getElementById('close-task-popup-btn');
+    if (openTaskPopupBtn && taskPopup) {
+        openTaskPopupBtn.addEventListener('click', () => {
+            taskPopup.classList.remove('hidden');
+            setTimeout(() => {
+                const input = document.getElementById('task-input') as HTMLInputElement;
+                if (input) input.focus();
+            }, 50);
+        });
+    }
+    if (closeTaskPopupBtn && taskPopup) {
+        closeTaskPopupBtn.addEventListener('click', () => {
+            taskPopup.classList.add('hidden');
         });
     }
 };
@@ -1354,5 +1376,28 @@ if (dom.aiAnalyzeModal) dom.aiAnalyzeModal.addEventListener('click', e => { if (
     });
     observer.observe(document.body, { childList: true, subtree: true });
 })();
+
+// Preencher e atualizar categoria no modal de detalhes da tarefa
+function fillDetailCategorySelect(currentCategory: string | null) {
+    const select = document.getElementById('detail-category-select') as HTMLSelectElement;
+    if (!select || !categoriesCollectionRef) return;
+    select.innerHTML = '<option value="Nenhuma">Sem Categoria</option>';
+    getDocs(categoriesCollectionRef).then(snapshot => {
+        snapshot.forEach(doc => {
+            const name = doc.data().name;
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            select.appendChild(option);
+        });
+        select.value = currentCategory || 'Nenhuma';
+    });
+    select.onchange = async () => {
+        if (!activeTaskId || !tasksCollectionRef) return;
+        const newCategory = select.value === 'Nenhuma' ? null : select.value;
+        await updateDoc(doc(tasksCollectionRef, activeTaskId), { category: newCategory });
+        showToast('Categoria atualizada!');
+    };
+}
 
 start();
