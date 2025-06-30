@@ -119,6 +119,7 @@ let canvasState = {
 };
 let tasksCache: Task[] = [];
 let nodesCache: { [taskId: string]: HTMLElement } = {};
+let advancedTaskFilter = 'todas';
 
 // --- Listener Management ---
 let unsubs: { [key: string]: (() => void) | null } = {
@@ -261,10 +262,25 @@ function loadTasks() {
     let q = currentFilter === 'Todos' ? query(tasksCollectionRef) : query(tasksCollectionRef, where("category", "==", currentFilter));
     unsubs.tasks = onSnapshot(q, (snapshot) => {
         let tasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Task));
-        if (!showCompleted) tasks = tasks.filter(task => !task.completed);
+        // Filtros avançados
+        if (advancedTaskFilter === 'antigas') {
+            tasks.sort((a: Task, b: Task) => (a.createdAt?.toMillis() || 0) - (b.createdAt?.toMillis() || 0));
+        } else if (advancedTaskFilter === 'novas') {
+            tasks.sort((a: Task, b: Task) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
+        } else if (advancedTaskFilter === 'incompletas') {
+            tasks = tasks.filter((task: Task) => (task.subtaskCount || 0) > (task.completedSubtaskCount || 0));
+        } else if (advancedTaskFilter === 'atrasadas') {
+            const today = new Date();
+            today.setHours(0,0,0,0);
+            tasks = tasks.filter((task: Task) => task.dueDate && task.dueDate.toDate() < today && !task.completed);
+        } else if (advancedTaskFilter === 'concluidas') {
+            tasks = tasks.filter((task: Task) => task.completed);
+        } else if (advancedTaskFilter === 'sem-categoria') {
+            tasks = tasks.filter((task: Task) => !task.category || task.category === 'Nenhuma');
+        }
+        if (!showCompleted && advancedTaskFilter !== 'concluidas') tasks = tasks.filter((task: Task) => !task.completed);
         dom.taskList.innerHTML = '';
-        tasks.sort((a,b) => (a.createdAt?.toMillis() || 0) - (b.createdAt?.toMillis() || 0))
-             .forEach(task => renderTask(task.id, task));
+        tasks.forEach((task: Task) => renderTask(task.id, task));
     }, console.error);
 }
 
@@ -772,24 +788,62 @@ function renderCanvasNode(task: Task) {
     dom.taskCanvas.appendChild(node);
 }
 
+// Comentários das conexões (em memória)
+const connectionComments: { [key: string]: string } = {};
+
 function drawAllLines() {
     if (!dom.canvasLinesSvg) return;
-    console.log("[Canvas Draw] drawAllLines called.");
+    // console.log("[Canvas Draw] drawAllLines called.");
     const linkingLine = dom.canvasLinesSvg.querySelector('.linking-line');
     dom.canvasLinesSvg.innerHTML = '';
     if (linkingLine) dom.canvasLinesSvg.appendChild(linkingLine);
 
     tasksCache.forEach(task => {
         if (task.connections?.length) {
-            task.connections.forEach(targetId => {
+            task.connections.forEach(conn => {
+                let targetId: string;
+                let commentText: string | undefined;
+                if (typeof conn === 'string') {
+                    targetId = conn;
+                    commentText = undefined;
+                } else {
+                    targetId = conn.targetId;
+                    commentText = conn.comment;
+                }
                 const sourceNode = nodesCache[task.id];
                 const targetNode = nodesCache[targetId];
-                console.log(`[Canvas Draw] Attempting to connect ${task.id} -> ${targetId}`);
                 if (sourceNode && targetNode) {
                     const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
                     const line = createSvgLine(sourceNode, targetNode);
                     group.appendChild(line);
-
+                    // Comentário da conexão
+                    if (commentText) {
+                        // ... (igual antes)
+                        const sourceX = sourceNode.offsetLeft + sourceNode.offsetWidth;
+                        const sourceY = sourceNode.offsetTop + sourceNode.offsetHeight / 2;
+                        const targetX = targetNode.offsetLeft;
+                        const targetY = targetNode.offsetTop + targetNode.offsetHeight / 2;
+                        const midX = (sourceX + targetX) / 2;
+                        const midY = (sourceY + targetY) / 2;
+                        const textElem = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                        textElem.setAttribute('x', String(midX));
+                        textElem.setAttribute('y', String(midY - 10));
+                        textElem.setAttribute('text-anchor', 'middle');
+                        textElem.setAttribute('fill', '#6366f1');
+                        textElem.setAttribute('font-size', '13');
+                        textElem.setAttribute('opacity', '0.7');
+                        textElem.setAttribute('pointer-events', 'none');
+                        textElem.textContent = commentText;
+                        group.appendChild(textElem);
+                    }
+                    // Duplo clique para adicionar/editar comentário
+                    line.addEventListener('dblclick', (e) => {
+                        e.stopPropagation();
+                        const midX = (sourceNode.offsetLeft + sourceNode.offsetWidth + targetNode.offsetLeft) / 2;
+                        const midY = (sourceNode.offsetTop + sourceNode.offsetHeight / 2 + targetNode.offsetTop + targetNode.offsetHeight / 2) / 2;
+                        showConnectionCommentInput(task.id, targetId, midX, midY, commentText || '');
+                    });
+                    // ... restante igual ...
                     // Cria o ícone de lixeira (SVG FontAwesome trash)
                     const trashIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
                     trashIcon.setAttribute('width', '20');
@@ -799,7 +853,7 @@ function drawAllLines() {
                     trashIcon.style.display = 'none';
                     trashIcon.style.position = 'absolute';
                     trashIcon.style.cursor = 'pointer';
-                    trashIcon.innerHTML = `<path fill="#ef4444" d="M135.2 17.7C140.2 7.4 150.5 0 162.3 0h123.4c11.8 0 22.1 7.4 27.1 17.7l19.8 38.3H432c8.8 0 16 7.2 16 16s-7.2 16-16 16h-16l-21.2 339.4c-2.6 41.2-36.7 72.3-77.9 72.3H131.1c-41.2 0-75.3-31.1-77.9-72.3L32 88H16C7.2 88 0 80.8 0 72s7.2-16 16-16h74.4l19.8-38.3zM131.1 464h185.8c23.2 0 42.2-17.5 43.5-40.7L381.2 88H66.8l21.2 335.3c1.3 23.2 20.3 40.7 43.5 40.7zM176 224c8.8 0 16 7.2 16 16v128c0 8.8-7.2 16-16 16s-16-7.2-16-16V240c0-8.8 7.2-16 16-16zm48 0c8.8 0 16 7.2 16 16v128c0 8.8-7.2 16-16 16s-16-7.2-16-16V240c0-8.8 7.2-16 16-16s16 7.2 16 16z"/>`;
+                    trashIcon.innerHTML = `<path fill="#ef4444" d="M135.2 17.7C140.2 7.4 150.5 0 162.3 0h123.4c11.8 0 22.1 7.4 27.1 17.7l19.8 38.3H432c8.8 0 16 7.2 16 16s-7.2 16-16 16h-16l-21.2 339.4c-2.6 41.2-36.7 72.3-77.9 72.3H131.1c-41.2 0-75.3-31.1-77.9-72.3L32 88H16C7.2 88 0 80.8 0 72s7.2-16 16-16h74.4l19.8-38.3zM131.1 464h185.8c23.2 0 42.2-17.5 43.5-40.7L381.2 88H66.8l21.2 335.3c1.3 23.2 20.3 40.7 43.5 40.7zM176 224c8.8 0 16 7.2 16 16v128c0 8.8-7.2 16-16 16s-16-7.2-16-16V240c0-8.8 7.2-16 16-16s16 7.2 16 16z"/>`;
 
                     // Calcula a posição do ícone (meio da curva)
                     const sourceX = sourceNode.offsetLeft + sourceNode.offsetWidth;
@@ -812,14 +866,26 @@ function drawAllLines() {
                     trashIcon.setAttribute('y', String(midY - 10));
                     trashIcon.style.pointerEvents = 'auto';
 
-                    // Eventos de hover
+                    // Eventos de hover com delay para sumir
+                    let trashHideTimeout: any = null;
                     group.addEventListener('mouseenter', () => {
+                        if (trashHideTimeout) clearTimeout(trashHideTimeout);
                         trashIcon.style.display = 'block';
                     });
                     group.addEventListener('mouseleave', () => {
-                        trashIcon.style.display = 'none';
+                        trashHideTimeout = setTimeout(() => {
+                            trashIcon.style.display = 'none';
+                        }, 350); // delay para facilitar o clique
                     });
-
+                    trashIcon.addEventListener('mouseenter', () => {
+                        if (trashHideTimeout) clearTimeout(trashHideTimeout);
+                        trashIcon.style.display = 'block';
+                    });
+                    trashIcon.addEventListener('mouseleave', () => {
+                        trashHideTimeout = setTimeout(() => {
+                            trashIcon.style.display = 'none';
+                        }, 350);
+                    });
                     // Evento de clique para remover a conexão
                     trashIcon.addEventListener('click', async (e) => {
                         e.stopPropagation();
@@ -834,7 +900,7 @@ function drawAllLines() {
 
                     group.appendChild(trashIcon);
                     dom.canvasLinesSvg.appendChild(group);
-                    console.log(`[Canvas Draw] SUCCESS: Line drawn for ${task.id} -> ${targetId}`);
+                    // console.log(`[Canvas Draw] SUCCESS: Line drawn for ${task.id} -> ${targetId}`);
                 } else {
                     console.warn(`[Canvas Draw] FAILED to draw line: Could not find nodes in cache. Source (${task.id}): ${!!sourceNode}, Target (${targetId}): ${!!targetNode}`);
                 }
@@ -1398,6 +1464,69 @@ function fillDetailCategorySelect(currentCategory: string | null) {
         await updateDoc(doc(tasksCollectionRef, activeTaskId), { category: newCategory });
         showToast('Categoria atualizada!');
     };
+}
+
+// Atualizar filtro ao mudar o select
+const advancedTaskFilterSelect = document.getElementById('advanced-task-filter') as HTMLSelectElement;
+if (advancedTaskFilterSelect) {
+    advancedTaskFilterSelect.addEventListener('change', () => {
+        advancedTaskFilter = advancedTaskFilterSelect.value;
+        loadTasks();
+    });
+}
+
+// Função para mostrar input de comentário sobre a linha
+function showConnectionCommentInput(sourceId: string, targetId: string, x: number, y: number, initial: string) {
+    // Remove qualquer input anterior
+    const old = document.getElementById('canvas-conn-comment-input');
+    if (old) old.remove();
+    // Cria input HTML absoluto sobre o SVG
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = initial;
+    input.id = 'canvas-conn-comment-input';
+    input.placeholder = 'Comentário...';
+    input.style.position = 'absolute';
+    input.style.left = `${x - 60}px`;
+    input.style.top = `${y - 18}px`;
+    input.style.width = '120px';
+    input.style.zIndex = '10000';
+    input.style.background = '#fff';
+    input.style.border = '1px solid #6366f1';
+    input.style.borderRadius = '6px';
+    input.style.padding = '2px 8px';
+    input.style.fontSize = '13px';
+    input.style.boxShadow = '0 2px 8px rgba(99,102,241,0.08)';
+    input.style.opacity = '0.95';
+    input.style.outline = 'none';
+    input.style.pointerEvents = 'auto';
+    input.addEventListener('keydown', async (e) => {
+        if (e.key === 'Enter') {
+            // Persistir comentário no Firestore
+            if (tasksCollectionRef) {
+                const taskDocRef = doc(tasksCollectionRef, sourceId);
+                const task = tasksCache.find(t => t.id === sourceId);
+                if (task) {
+                    let newConnections: any[] = [];
+                    if (task.connections) {
+                        newConnections = task.connections.map(conn => {
+                            if ((typeof conn === 'string' && conn === targetId) || (typeof conn === 'object' && conn.targetId === targetId)) {
+                                return { targetId, comment: input.value.trim() };
+                            }
+                            return conn;
+                        });
+                    }
+                    await updateDoc(taskDocRef, { connections: newConnections });
+                }
+            }
+            input.remove();
+            drawAllLines();
+        } else if (e.key === 'Escape') {
+            input.remove();
+        }
+    });
+    setTimeout(() => input.focus(), 30);
+    dom.taskCanvasContainer.appendChild(input);
 }
 
 start();

@@ -17,7 +17,7 @@ export interface Task {
     completedSubtaskCount: number;
     x?: number;
     y?: number;
-    connections?: string[];
+    connections?: (string | { targetId: string, comment?: string })[];
 }
 
 export interface Note {

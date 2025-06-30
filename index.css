@@ -271,10 +271,11 @@ html.dark #canvas-popup-subtasks .completed { opacity: 0.5; }
   pointer-events: auto !important;
   transition: filter 0.2s;
   filter: drop-shadow(0 2px 4px rgba(0,0,0,0.15));
-  padding: 10px;
-  background: rgba(0,0,0,0.01); /* aumenta área clicável sem poluir visualmente */
+  padding: 18px;
+  background: rgba(0,0,0,0.03); /* aumenta ainda mais a área clicável */
   border-radius: 50%;
   box-sizing: content-box;
+  cursor: pointer;
 }
 .canvas-trash-icon:hover {
   filter: brightness(1.2) drop-shadow(0 4px 8px rgba(239,68,68,0.3));
