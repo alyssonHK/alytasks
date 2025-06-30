@@ -5,8 +5,8 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { Task, Note, Subtask } from './types.js';
-import { db, appId } from './firebase.js';
-import { collection, getDocs, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { getDb, appId } from './firebase.js';
+import { collection, getDocs, query, where } from "firebase/firestore";
 
 // The API key is handled by the execution environment.
 const apiKey = process.env.API_KEY || "";
@@ -15,6 +15,7 @@ const ai = new GoogleGenAI({ apiKey });
 const fetchSubtasksForTask = async (userId: string, taskId: string): Promise<Subtask[]> => {
     if (!userId) return [];
     try {
+        const db = await getDb();
         const subtasksRef = collection(db, `artifacts/${appId}/users/${userId}/tasks/${taskId}/subtasks`);
         const q = query(subtasksRef, where("completed", "==", false));
         const subtasksSnap = await getDocs(q);
@@ -76,7 +77,7 @@ export const getAiSummary = async (userId: string, tasks: Task[], notes: Note[])
             contents: prompt,
         });
         
-        return response.text;
+        return response.text || "Erro: resposta vazia da IA.";
 
     } catch (error) {
         console.error("Error calling Gemini API:", error);
