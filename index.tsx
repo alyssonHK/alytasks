@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 
-import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, User } from "firebase/auth";
-import { doc, collection, onSnapshot, addDoc, updateDoc, deleteDoc, query, where, getDocs, setDoc, Timestamp, increment, DocumentData, QuerySnapshot, FirestoreDataConverter } from "firebase/firestore";
+import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { doc, collection, onSnapshot, addDoc, updateDoc, deleteDoc, query, where, getDocs, setDoc, Timestamp, increment, arrayUnion, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { auth, db, appId, initializeOfflinePersistence } from './firebase.js';
 import { getAiSummary } from './gemini.js';
 import { Task, Note, Subtask } from "./types.js";
@@ -13,27 +13,6 @@ import { Task, Note, Subtask } from "./types.js";
 declare var marked: any;
 
 const OFFLINE_SAVE_MESSAGE = "Você está offline. A alteração foi salva e será sincronizada em breve.";
-
-// --- Converters ---
-const taskConverter: FirestoreDataConverter<Task> = {
-    toFirestore: (task: Task) => {
-        return { ...task };
-    },
-    fromFirestore: (snapshot, options) => {
-        const data = snapshot.data(options);
-        return { id: snapshot.id, ...data } as Task;
-    }
-};
-
-const noteConverter: FirestoreDataConverter<Note> = {
-    toFirestore: (note: Note) => {
-        return { ...note };
-    },
-    fromFirestore: (snapshot, options) => {
-        const data = snapshot.data(options);
-        return { id: snapshot.id, ...data } as Note;
-    }
-};
 
 // --- DOM ---
 const dom = {
@@ -104,16 +83,15 @@ const dom = {
     viewToggleBtn: document.getElementById('view-toggle-btn') as HTMLButtonElement,
     viewToggleIcon: document.getElementById('view-toggle-icon') as HTMLElement,
     mainContentApp: document.getElementById('main-content-app') as HTMLElement,
-    canvasModal: document.getElementById('canvas-modal') as HTMLElement,
-    closeCanvasModalBtn: document.getElementById('close-canvas-modal-btn') as HTMLButtonElement,
-    canvasContent: document.getElementById('canvas-content') as HTMLElement,
-    canvasLinesSvg: document.getElementById('canvas-lines-svg') as unknown as SVGSVGElement,
+    canvasView: document.getElementById('canvas-view') as HTMLElement,
     taskCanvasContainer: document.getElementById('task-canvas-container') as HTMLElement,
+    taskCanvas: document.getElementById('task-canvas') as HTMLElement,
+    canvasLinesSvg: document.getElementById('canvas-lines-svg') as unknown as SVGElement,
     canvasTaskPopup: document.getElementById('canvas-task-popup') as HTMLElement,
     canvasPopupTitle: document.getElementById('canvas-popup-title') as HTMLElement,
+    canvasPopupCloseBtn: document.getElementById('canvas-popup-close-btn') as HTMLButtonElement,
     canvasPopupSubtasks: document.getElementById('canvas-popup-subtasks') as HTMLElement,
     canvasPopupNotes: document.getElementById('canvas-popup-notes') as HTMLElement,
-    canvasPopupCloseBtn: document.getElementById('canvas-popup-close-btn') as HTMLButtonElement,
 };
 
 // --- State ---
@@ -123,11 +101,24 @@ let currentFilter = 'Todos';
 let showCompleted = false;
 let activeTaskId: string | null = null;
 let calendarDate = new Date();
+let currentView: 'list' | 'canvas' = 'list';
+let wasOffline = !navigator.onLine;
+let canvasState = {
+    isPanning: false,
+    isDragging: false,
+    isLinking: false,
+    draggedNode: null as HTMLElement | null,
+    linkStartNodeId: null as string | null,
+    startX: 0,
+    startY: 0,
+    panOffsetX: 0,
+    panOffsetY: 0,
+    zoom: 1,
+    nodeInitialX: 0,
+    nodeInitialY: 0,
+};
+let tasksCache: Task[] = [];
 let nodesCache: { [taskId: string]: HTMLElement } = {};
-let connectionsCache: any[] = [];
-let linkingStartNodeId: string | null = null;
-let linkingLine: SVGLineElement | null = null;
-let isCanvasView = false;
 
 // --- Listener Management ---
 let unsubs: { [key: string]: (() => void) | null } = {
@@ -136,7 +127,6 @@ let unsubs: { [key: string]: (() => void) | null } = {
     categories: null,
     canvas_tasks: null,
     task_details: null,
-    connections: null,
 };
 
 function unsubscribe(key: keyof typeof unsubs) {
@@ -149,6 +139,7 @@ function unsubscribe(key: keyof typeof unsubs) {
 function unsubscribeAll() {
     Object.keys(unsubs).forEach(key => unsubscribe(key as keyof typeof unsubs));
 }
+
 
 // --- Event Listener Manager ---
 const eventManager = {
@@ -166,14 +157,22 @@ const eventManager = {
     }
 };
 
-// --- Utility Functions ---
+// --- All Functions Declarations ---
+
 function showToast(message: string, duration: number = 4000) {
     if (!dom.toastContainer) return;
+
     const toast = document.createElement('div');
     toast.className = 'toast';
     toast.textContent = message;
     dom.toastContainer.appendChild(toast);
-    setTimeout(() => { toast.classList.add('show'); }, 10);
+
+    // Animate in
+    setTimeout(() => {
+        toast.classList.add('show');
+    }, 10);
+
+    // Animate out and remove
     setTimeout(() => {
         toast.classList.remove('show');
         toast.addEventListener('transitionend', () => toast.remove());
@@ -190,39 +189,56 @@ function formatFirestoreTimestamp(timestamp: Timestamp) {
     if (!timestamp || !timestamp.toDate) return 'Indefinido';
     return timestamp.toDate().toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
-
 function displayCurrentDate() {
     if(dom.currentDate) dom.currentDate.textContent = new Date().toLocaleDateString('pt-BR', { dateStyle: 'full' });
 }
-
 function updateToggleCompletedButton() {
      if(dom.toggleCompletedBtn) dom.toggleCompletedBtn.innerHTML = showCompleted ? `<i class="fas fa-eye-slash"></i> Ocultar Concluídas` : `<i class="fas fa-eye"></i> Mostrar Concluídas`;
 }
 
 function updateConnectionStatus() {
     if (!dom.connectionStatus || !dom.connectionText || !dom.offlineBanner) return;
-    const isOnline = navigator.onLine;
-    dom.connectionStatus.classList.toggle('online', isOnline);
-    dom.connectionStatus.classList.toggle('offline', !isOnline);
-    dom.connectionText.textContent = isOnline ? 'Online' : 'Offline';
-    dom.connectionStatus.title = isOnline ? 'Conectado ao servidor.' : 'Você está offline.';
-    dom.aiAnalyzeBtn.disabled = !isOnline;
-    dom.aiAnalyzeBtn.title = isOnline ? 'Análise com IA' : 'Análise com IA (Indisponível offline)';
-    dom.offlineBanner.classList.toggle('hidden', isOnline);
+
+    const isOffline = !navigator.onLine;
+
+    if (isOffline) {
+        dom.connectionStatus.classList.remove('online');
+        dom.connectionStatus.classList.add('offline');
+        dom.connectionText.textContent = 'Offline';
+        dom.connectionStatus.title = 'Você está offline. As alterações serão salvas e sincronizadas quando reconectar.';
+        dom.aiAnalyzeBtn.disabled = true;
+        dom.aiAnalyzeBtn.title = 'Análise com IA (Indisponível offline)';
+        dom.offlineBanner.classList.remove('hidden');
+    } else { // is online
+        dom.connectionStatus.classList.remove('offline');
+        dom.connectionStatus.classList.add('online');
+        dom.connectionText.textContent = 'Online';
+        dom.connectionStatus.title = 'Conectado ao servidor.';
+        dom.aiAnalyzeBtn.disabled = false;
+        dom.aiAnalyzeBtn.title = 'Análise com IA';
+        dom.offlineBanner.classList.add('hidden');
+    }
+
+    if (isOffline && !wasOffline) { // Transitioned to offline
+        showToast("Você perdeu a conexão. O aplicativo está em modo offline.", 5000);
+    } else if (!isOffline && wasOffline) { // Transitioned to online
+        showToast("Conexão restaurada. Sincronizando seus dados...", 4000);
+    }
+    
+    wasOffline = isOffline;
 }
 
-// --- Core App Logic ---
 async function handleAddTask() {
     const taskText = dom.taskInput.value.trim();
     if (!taskText || !tasksCollectionRef) return;
     let category: string | null = dom.categorySelect.value;
     if (category === 'Nenhuma') category = null;
+
     const dueDateValue = dom.dueDateInput.value;
     const dueDate = dueDateValue ? Timestamp.fromDate(new Date(dueDateValue + 'T00:00:00')) : null;
     await addDoc(tasksCollectionRef, { text: taskText, completed: false, category, createdAt: Timestamp.now(), dueDate, subtaskCount: 0, noteCount: 0, completedSubtaskCount: 0 });
     if (!navigator.onLine) showToast(OFFLINE_SAVE_MESSAGE);
-    dom.taskInput.value = '';
-    dom.dueDateInput.value = '';
+    dom.taskInput.value = ''; dom.dueDateInput.value = '';
 }
 
 async function handleSaveNote() {
@@ -244,23 +260,29 @@ function loadTasks() {
     unsubscribe('tasks');
     let q = currentFilter === 'Todos' ? query(tasksCollectionRef) : query(tasksCollectionRef, where("category", "==", currentFilter));
     unsubs.tasks = onSnapshot(q, (snapshot) => {
-        let tasks = snapshot.docs.map(doc => doc.data() as Task);
-        if (!showCompleted) tasks = tasks.filter((task: Task) => !task.completed);
+        let tasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Task));
+        if (!showCompleted) tasks = tasks.filter(task => !task.completed);
         dom.taskList.innerHTML = '';
-        tasks.sort((a: Task, b: Task) => (a.createdAt?.toMillis() || 0) - (b.createdAt?.toMillis() || 0))
-             .forEach((task: Task) => renderTask(task.id, task));
+        tasks.sort((a,b) => (a.createdAt?.toMillis() || 0) - (b.createdAt?.toMillis() || 0))
+             .forEach(task => renderTask(task.id, task));
     }, console.error);
 }
 
 function renderTask(id: string, data: Task) {
     const el = document.createElement('div');
     el.className = `task-item group p-3 rounded-lg border-b ${data.completed ? 'bg-green-50 text-gray-500' : 'bg-white'}`;
+    
     let subtaskIconColor = 'text-gray-400';
     if (data.subtaskCount > 0) {
-        if ((data.completedSubtaskCount || 0) === 0) subtaskIconColor = 'text-red-500';
-        else if (data.completedSubtaskCount === data.subtaskCount) subtaskIconColor = 'text-green-500';
-        else subtaskIconColor = 'text-yellow-500';
+        if ((data.completedSubtaskCount || 0) === 0) {
+            subtaskIconColor = 'text-red-500';
+        } else if (data.completedSubtaskCount === data.subtaskCount) {
+            subtaskIconColor = 'text-green-500';
+        } else {
+            subtaskIconColor = 'text-yellow-500';
+        }
     }
+
     let indicatorIcons = '';
     if (data.subtaskCount > 0) indicatorIcons += `<span class="ml-2 ${subtaskIconColor}" title="${data.completedSubtaskCount || 0}/${data.subtaskCount} sub-tarefas concluídas"><i class="fa-solid fa-list-check"></i></span>`;
     if (data.noteCount > 0) indicatorIcons += `<span class="ml-2 text-gray-400" title="${data.noteCount} anotações"><i class="fa-solid fa-note-sticky"></i></span>`;
@@ -300,7 +322,7 @@ function loadNotes() {
     const q = query(notesCollectionRef);
     unsubs.notes = onSnapshot(q, (snapshot) => {
         dom.notesList.innerHTML = '';
-         snapshot.docs.sort((a,b) => (b.data() as Note).createdAt.toMillis() - (a.data() as Note).createdAt.toMillis())
+         snapshot.docs.sort((a,b) => b.data().createdAt.toMillis() - a.data().createdAt.toMillis())
             .forEach(doc => renderNote(doc.id, doc.data() as Note));
     }, console.error);
 }
@@ -332,7 +354,7 @@ function renderNote(id: string, data: Note) {
 function loadCategories() {
     if (!categoriesCollectionRef) return;
     unsubscribe('categories');
-    unsubs.categories = onSnapshot(categoriesCollectionRef, (snapshot: QuerySnapshot<DocumentData>) => {
+    unsubs.categories = onSnapshot(categoriesCollectionRef, (snapshot) => {
         dom.categorySelect.innerHTML = '<option value="Nenhuma">Sem Categoria</option>';
         dom.filterContainer.innerHTML = '';
         const allBtn = document.createElement('button');
@@ -340,7 +362,7 @@ function loadCategories() {
         allBtn.textContent = 'Todos';
         allBtn.addEventListener('click', () => { currentFilter = 'Todos'; loadTasks(); updateActiveFilterButton(); });
         dom.filterContainer.appendChild(allBtn);
-        snapshot.docs.forEach((categoryDoc: DocumentData) => {
+        snapshot.docs.forEach(categoryDoc => {
             const categoryName = categoryDoc.data().name;
             const option = document.createElement('option');
             option.value = categoryName; option.textContent = categoryName;
@@ -383,31 +405,33 @@ async function addNewCategory(name: string) {
         if (!navigator.onLine) showToast(OFFLINE_SAVE_MESSAGE);
     }
 }
-async function openTaskDetailModal(taskId: string, taskTitle: string) {
+
+function openTaskDetailModal(taskId: string, taskTitle: string) {
     activeTaskId = taskId;
     dom.detailTaskTitle.textContent = taskTitle;
-    if (!userId) return;
-    const db = await getDb();
     const basePath = `artifacts/${appId}/users/${userId}/tasks/${taskId}`;
     const subtasksRef = collection(db, `${basePath}/subtasks`);
     const taskNotesRef = collection(db, `${basePath}/taskNotes`);
+    
     unsubscribe('task_details');
-    const unsubSub = onSnapshot(query(subtasksRef), (snap: QuerySnapshot<DocumentData>) => {
+
+    const unsubSub = onSnapshot(query(subtasksRef), (snap) => {
         dom.subtaskList.innerHTML = '';
-        snap.docs.sort((a: DocumentData, b: DocumentData) => a.data().createdAt.toMillis() - b.data().createdAt.toMillis())
-            .forEach((d: DocumentData) => renderSubtask(d.id, d.data() as Subtask));
+        snap.docs.sort((a,b)=> a.data().createdAt.toMillis() - b.data().createdAt.toMillis()).forEach(d => renderSubtask(d.id, d.data() as Subtask));
     });
-    const unsubNotes = onSnapshot(query(taskNotesRef), (snap: QuerySnapshot<DocumentData>) => {
+    const unsubNotes = onSnapshot(query(taskNotesRef), (snap) => {
         dom.taskNotesList.innerHTML = '';
-        snap.docs.sort((a: DocumentData, b: DocumentData) => a.data().createdAt.toMillis() - b.data().createdAt.toMillis())
-            .forEach((d: DocumentData) => renderTaskNote(d.id, d.data() as Note));
+        snap.docs.sort((a,b)=> a.data().createdAt.toMillis() - b.data().createdAt.toMillis()).forEach(d => renderTaskNote(d.id, d.data() as Note));
     });
+
     unsubs.task_details = () => {
         unsubSub();
         unsubNotes();
     };
+    
     dom.taskDetailModal.classList.remove('hidden');
 }
+
 function closeTaskDetailModal() {
     unsubscribe('task_details');
     dom.taskDetailModal.classList.add('hidden');
@@ -415,6 +439,7 @@ function closeTaskDetailModal() {
     dom.detailTitleContainer.classList.remove('hidden');
     dom.detailEditContainer.classList.add('hidden');
 }
+
 function toggleMainTaskEdit() {
     dom.detailTitleContainer.classList.toggle('hidden');
     dom.detailEditContainer.classList.toggle('hidden');
@@ -432,9 +457,7 @@ function toggleMainTaskEdit() {
 }
 
 async function handleAddSubtask() {
-    const text = dom.subtaskInput.value.trim();
-    if (!text || !activeTaskId || !userId || !tasksCollectionRef) return;
-    const db = await getDb();
+    const text = dom.subtaskInput.value.trim(); if (!text || !activeTaskId || !userId || !tasksCollectionRef) return;
     const subtasksRef = collection(db, `artifacts/${appId}/users/${userId}/tasks/${activeTaskId}/subtasks`);
     await addDoc(subtasksRef, { text, completed: false, createdAt: Timestamp.now() });
     await updateDoc(doc(tasksCollectionRef, activeTaskId), { subtaskCount: increment(1) });
@@ -455,21 +478,17 @@ function renderSubtask(id: string, data: Subtask) {
             <button class="delete-subtask text-gray-400 hover:text-red-500 text-sm" data-id="${id}"><i class="fas fa-trash-alt"></i></button>
         </div>`;
     (el.querySelector('.subtask-checkbox') as HTMLInputElement).addEventListener('change', async (e: Event) => {
-        if (!activeTaskId) return;
         const target = e.target as HTMLInputElement;
         const incrementValue = target.checked ? 1 : -1;
-        const db = await getDb();
         await updateDoc(doc(collection(db, `artifacts/${appId}/users/${userId}/tasks/${activeTaskId}/subtasks`), id), { completed: target.checked });
         await updateDoc(doc(tasksCollectionRef, activeTaskId), { completedSubtaskCount: increment(incrementValue) });
         if (!navigator.onLine) showToast(OFFLINE_SAVE_MESSAGE);
     });
     (el.querySelector('.delete-subtask') as HTMLButtonElement).addEventListener('click', async () => {
-        if (!activeTaskId) return;
-        const db = await getDb();
-        if (data.completed) {
-            await updateDoc(doc(tasksCollectionRef, activeTaskId), { subtaskCount: increment(-1), completedSubtaskCount: increment(-1) });
+        if(data.completed) {
+             await updateDoc(doc(tasksCollectionRef, activeTaskId), { subtaskCount: increment(-1), completedSubtaskCount: increment(-1) });
         } else {
-            await updateDoc(doc(tasksCollectionRef, activeTaskId), { subtaskCount: increment(-1) });
+             await updateDoc(doc(tasksCollectionRef, activeTaskId), { subtaskCount: increment(-1) });
         }
         await deleteDoc(doc(collection(db, `artifacts/${appId}/users/${userId}/tasks/${activeTaskId}/subtasks`), id));
         if (!navigator.onLine) showToast(OFFLINE_SAVE_MESSAGE);
@@ -482,8 +501,7 @@ function renderSubtask(id: string, data: Subtask) {
         input.focus();
         (el.querySelector('.save-subtask-edit') as HTMLButtonElement).addEventListener('click', async () => {
             const newText = input.value.trim();
-            if (newText && activeTaskId) {
-                const db = await getDb();
+            if(newText) {
                 await updateDoc(doc(collection(db, `artifacts/${appId}/users/${userId}/tasks/${activeTaskId}/subtasks`), id), { text: newText });
                 if (!navigator.onLine) showToast(OFFLINE_SAVE_MESSAGE);
             }
@@ -491,7 +509,14 @@ function renderSubtask(id: string, data: Subtask) {
     });
     dom.subtaskList.appendChild(el);
 }
-
+async function handleAddTaskNote() {
+    const text = dom.taskNoteInput.value.trim(); if (!text || !activeTaskId || !userId || !tasksCollectionRef) return;
+    const taskNotesRef = collection(db, `artifacts/${appId}/users/${userId}/tasks/${activeTaskId}/taskNotes`);
+    await addDoc(taskNotesRef, { text, createdAt: Timestamp.now() });
+    await updateDoc(doc(tasksCollectionRef, activeTaskId), { noteCount: increment(1) });
+    if (!navigator.onLine) showToast(OFFLINE_SAVE_MESSAGE);
+    dom.taskNoteInput.value = '';
+}
 function renderTaskNote(id: string, data: Note) {
     const el = document.createElement('div');
     el.className = 'bg-yellow-100 p-2 rounded-lg text-sm text-yellow-800 relative group';
@@ -502,8 +527,6 @@ function renderTaskNote(id: string, data: Note) {
              <button class="delete-task-note text-yellow-600 hover:text-red-600" data-id="${id}"><i class="fas fa-times fa-xs"></i></button>
         </div>`;
     (el.querySelector('.delete-task-note') as HTMLButtonElement).addEventListener('click', async () => {
-        if (!activeTaskId) return;
-        const db = await getDb();
         await deleteDoc(doc(collection(db, `artifacts/${appId}/users/${userId}/tasks/${activeTaskId}/taskNotes`), id));
         await updateDoc(doc(tasksCollectionRef, activeTaskId), { noteCount: increment(-1) });
         if (!navigator.onLine) showToast(OFFLINE_SAVE_MESSAGE);
@@ -516,8 +539,7 @@ function renderTaskNote(id: string, data: Note) {
         textarea.focus();
         (el.querySelector('.save-task-note-edit') as HTMLButtonElement).addEventListener('click', async () => {
             const newText = textarea.value.trim();
-            if (newText && activeTaskId) {
-                const db = await getDb();
+            if(newText) {
                 await updateDoc(doc(collection(db, `artifacts/${appId}/users/${userId}/tasks/${activeTaskId}/taskNotes`), id), { text: newText });
                 if (!navigator.onLine) showToast(OFFLINE_SAVE_MESSAGE);
             }
@@ -526,6 +548,811 @@ function renderTaskNote(id: string, data: Note) {
     dom.taskNotesList.appendChild(el);
 }
 
-function getDb() {
-    return db;
+function openCalendar() { dom.calendarModal.classList.remove('hidden'); renderCalendar(); }
+function closeCalendar() { dom.calendarModal.classList.add('hidden'); }
+async function renderCalendar() {
+     const year = calendarDate.getFullYear(); const month = calendarDate.getMonth();
+    dom.calendarMonthYear.textContent = new Date(year, month).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    dom.calendarGrid.innerHTML = '';
+    const activeDays = await fetchActivityForMonth(year, month);
+    const pendingDays = await fetchPendingDueDays(year, month);
+    const firstDayOfMonth = new Date(year, month, 1).getDay(); const daysInMonth = new Date(year, month + 1, 0).getDate();
+    for (let i = 0; i < firstDayOfMonth; i++) dom.calendarGrid.appendChild(document.createElement('div'));
+    for (let day = 1; day <= daysInMonth; day++) {
+        const dayEl = document.createElement('div');
+        dayEl.className = 'calendar-day relative p-2 border border-gray-200 rounded-md cursor-pointer hover:bg-gray-100 flex items-center justify-center';
+        dayEl.textContent = day.toString();
+        if (activeDays.has(day)) {
+            const dot = document.createElement('div');
+            dot.className = 'calendar-day-dot';
+            dayEl.appendChild(dot);
+        }
+        if (pendingDays.has(day)) {
+            const badge = document.createElement('div');
+            badge.className = 'absolute top-1 right-1 w-2.5 h-2.5 rounded-full bg-orange-500';
+            badge.title = 'Tarefa pendente para este dia';
+            dayEl.appendChild(badge);
+        }
+        dayEl.addEventListener('click', () => {
+            document.querySelectorAll('.calendar-day.selected').forEach(d => d.classList.remove('selected'));
+            dayEl.classList.add('selected');
+            showDayDetails(new Date(year, month, day));
+        });
+        dom.calendarGrid.appendChild(dayEl);
+    }
 }
+async function fetchActivityForMonth(year: number, month: number) {
+    if (!userId || !tasksCollectionRef || !notesCollectionRef) return new Set();
+    const startOfMonth = new Date(year, month, 1);
+    const endOfMonth = new Date(year, month + 1, 0, 23, 59, 59);
+    const activeDays = new Set<number>();
+    const qTasks = query(tasksCollectionRef, where('createdAt', '>=', startOfMonth), where('createdAt', '<=', endOfMonth));
+    const qNotes = query(notesCollectionRef, where('createdAt', '>=', startOfMonth), where('createdAt', '<=', endOfMonth));
+    const [tasksSnap, notesSnap] = await Promise.all([getDocs(qTasks), getDocs(qNotes)]);
+    tasksSnap.forEach(doc => activeDays.add(doc.data().createdAt.toDate().getDate()));
+    notesSnap.forEach(doc => activeDays.add(doc.data().createdAt.toDate().getDate()));
+    return activeDays;
+}
+async function fetchPendingDueDays(year: number, month: number) {
+    if (!userId || !tasksCollectionRef) return new Set();
+    const startOfMonth = new Date(year, month, 1);
+    const endOfMonth = new Date(year, month + 1, 0, 23, 59, 59);
+    const q = query(tasksCollectionRef, where('dueDate', '>=', startOfMonth), where('dueDate', '<=', endOfMonth), where('completed', '==', false));
+    const snap = await getDocs(q);
+    const days = new Set<number>();
+    snap.forEach(doc => {
+        const due = doc.data().dueDate;
+        if (due && due.toDate) days.add(due.toDate().getDate());
+    });
+    return days;
+}
+async function showDayDetails(date: Date) {
+    if (!tasksCollectionRef || !notesCollectionRef) return;
+    dom.detailsDayHeader.textContent = `Atividade de ${date.toLocaleDateString('pt-BR', {dateStyle: 'full'})}`;
+    dom.detailsContent.innerHTML = 'Carregando...';
+    const startOfDay = new Date(date.setHours(0,0,0,0));
+    const endOfDay = new Date(date.setHours(23,59,59,999));
+    const qTasks = query(tasksCollectionRef, where('createdAt', '>=', startOfDay), where('createdAt', '<=', endOfDay));
+    const qNotes = query(notesCollectionRef, where('createdAt', '>=', startOfDay), where('createdAt', '<=', endOfDay));
+    const qDue = query(tasksCollectionRef, where('dueDate', '>=', startOfDay), where('dueDate', '<=', endOfDay));
+    const [tasksSnap, notesSnap, dueSnap] = await Promise.all([ getDocs(qTasks), getDocs(qNotes), getDocs(qDue) ]);
+    let html = '';
+    if (!dueSnap.empty) {
+        html += '<div class="mb-4"><h4 class="font-bold text-orange-500">Tarefas agendadas para esse dia</h4>';
+        dueSnap.forEach(doc => {
+            const data = doc.data();
+            html += `<span class='calendar-task-link text-orange-900 hover:underline cursor-pointer' data-taskid='${doc.id}'>${data.text}</span><br>`;
+        });
+        html += '</div>';
+    }
+    html += '<div class="mb-4"><h4 class="font-bold">Tarefas criadas neste dia</h4>';
+    if(tasksSnap.empty) html += '<p class="text-sm">Nenhuma tarefa.</p>';
+    else tasksSnap.forEach(doc => html += `<p class="text-sm bg-gray-100 p-1 rounded mt-1">${doc.data().text}</p>`);
+    html += '</div><div><h4 class="font-bold">Anotações</h4>';
+    if(notesSnap.empty) html += '<p class="text-sm">Nenhuma anotação.</p>';
+    else notesSnap.forEach(doc => html += `<p class="text-sm bg-yellow-100 p-1 rounded mt-1">${doc.data().text}</p>`);
+    html += '</div>';
+    dom.detailsContent.innerHTML = html;
+    dom.detailsContent.querySelectorAll('.calendar-task-link').forEach(el => {
+        el.addEventListener('click', function(this: HTMLElement) {
+            const tid = this.getAttribute('data-taskid');
+            const t = dueSnap.docs.find(d => d.id === tid);
+            if (tid && t) openTaskDetailModal(tid, t.data().text);
+        });
+    });
+}
+
+// --- Canvas View Functions ---
+
+function toggleView() {
+    currentView = currentView === 'list' ? 'canvas' : 'list';
+    const isListView = currentView === 'list';
+
+    dom.mainContentApp.classList.toggle('hidden', !isListView);
+    dom.canvasView.classList.toggle('hidden', isListView);
+    dom.viewToggleIcon.className = isListView ? 'fas fa-project-diagram fa-lg' : 'fas fa-list-ul fa-lg';
+    dom.viewToggleBtn.title = isListView ? 'Visualização em Canvas' : 'Visualização em Lista';
+
+    if (isListView) {
+        unsubscribe('canvas_tasks');
+        loadTasks();
+    } else {
+        unsubscribe('tasks');
+        requestAnimationFrame(() => {
+            loadCanvasTasks();
+        });
+    }
+}
+
+async function loadCanvasTasks() {
+    if (!tasksCollectionRef) return;
+
+    // --- 1. Cleanup & Setup ---
+    unsubscribe('canvas_tasks');
+    dom.taskCanvas.innerHTML = '';
+    dom.canvasLinesSvg.innerHTML = '';
+    nodesCache = {}; // Reset caches
+    tasksCache = [];
+    syncCanvasTransforms(); // Maintain pan/zoom
+
+    // --- 2. Attach a single, powerful listener for state reconciliation ---
+    unsubs.canvas_tasks = onSnapshot(query(tasksCollectionRef), (snapshot) => {
+        console.log("[Canvas Sync] onSnapshot triggered. Reconciling entire canvas state.");
+
+        const latestTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Task));
+        tasksCache = latestTasks; // Update the main task cache with the source of truth
+        
+        const existingNodeIds = new Set(Object.keys(nodesCache));
+        const latestTaskIds = new Set(latestTasks.map(t => t.id));
+
+        const batch = writeBatch(db);
+        let hasPositionUpdates = false;
+
+        // --- 3. Reconcile Nodes: Update existing ones and add new ones ---
+        latestTasks.forEach((task, index) => {
+            let node = nodesCache[task.id];
+            
+            // Assign an initial position on the canvas if it doesn't have one
+            if (task.x === undefined || task.y === undefined) {
+                const containerWidth = dom.taskCanvasContainer.offsetWidth || 1000;
+                const columns = Math.max(1, Math.floor(containerWidth / 250));
+                task.x = (index % columns) * 250 + 50;
+                task.y = Math.floor(index / columns) * 120 + 50;
+                
+                // Batch the update to Firestore
+                batch.update(doc(tasksCollectionRef, task.id), { x: task.x, y: task.y });
+                hasPositionUpdates = true;
+            }
+
+            if (node) { // If node already exists, update its properties
+                // Don't update the position if the user is currently dragging this specific node
+                if (canvasState.draggedNode?.dataset.id !== task.id) {
+                    node.style.left = `${task.x}px`;
+                    node.style.top = `${task.y}px`;
+                }
+                const textEl = node.querySelector('.canvas-task-node-text') as HTMLParagraphElement;
+                if (textEl && textEl.textContent !== task.text) {
+                    textEl.textContent = task.text;
+                }
+                task.completed ? node.classList.add('completed-node') : node.classList.remove('completed-node');
+
+            } else { // If node is new, create it and add it to the DOM and cache
+                renderCanvasNode(task); 
+            }
+        });
+        
+        // If we created any new positions, commit them to Firestore
+        if (hasPositionUpdates) {
+             batch.commit().catch(e => console.warn("Falha ao salvar posições iniciais durante a sincronização.", e));
+        }
+
+        // --- 4. Reconcile Nodes: Remove old ones ---
+        existingNodeIds.forEach(nodeId => {
+            if (!latestTaskIds.has(nodeId)) {
+                console.log(`[Canvas Sync] Reconcile: Removing node ${nodeId}`);
+                const nodeToRemove = nodesCache[nodeId];
+                if (nodeToRemove) {
+                    nodeToRemove.remove();
+                    delete nodesCache[nodeId];
+                }
+            }
+        });
+
+        // --- 5. Draw All Connections ---
+        // By this point, the DOM and caches are guaranteed to be in sync with Firestore.
+        // It's now safe to draw all lines.
+        console.log("[Canvas Sync] Reconciliation complete. Drawing lines.");
+        drawAllLines();
+
+    }, (error) => {
+        console.error("Erro de sincronização com o canvas:", error);
+        showToast("Erro de sincronização com o canvas.");
+    });
+}
+
+
+function renderCanvasNode(task: Task) {
+    const node = document.createElement('div');
+    node.className = 'canvas-task-node';
+    node.dataset.id = task.id;
+    node.style.left = `${task.x || 0}px`;
+    node.style.top = `${task.y || 0}px`;
+    if (task.completed) node.classList.add('completed-node');
+
+    node.innerHTML = `
+        <p class="canvas-task-node-text">${task.text}</p>
+        <div class="canvas-task-node-link-handle"></div>
+    `;
+
+    nodesCache[task.id] = node;
+    dom.taskCanvas.appendChild(node);
+}
+
+function drawAllLines() {
+    if (!dom.canvasLinesSvg) return;
+    console.log("[Canvas Draw] drawAllLines called.");
+    const linkingLine = dom.canvasLinesSvg.querySelector('.linking-line');
+    dom.canvasLinesSvg.innerHTML = '';
+    if (linkingLine) dom.canvasLinesSvg.appendChild(linkingLine);
+
+    tasksCache.forEach(task => {
+        if (task.connections?.length) {
+            task.connections.forEach(targetId => {
+                const sourceNode = nodesCache[task.id];
+                const targetNode = nodesCache[targetId];
+                console.log(`[Canvas Draw] Attempting to connect ${task.id} -> ${targetId}`);
+                if (sourceNode && targetNode) {
+                    const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                    const line = createSvgLine(sourceNode, targetNode);
+                    group.appendChild(line);
+
+                    // Cria o ícone de lixeira (SVG FontAwesome trash)
+                    const trashIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                    trashIcon.setAttribute('width', '20');
+                    trashIcon.setAttribute('height', '20');
+                    trashIcon.setAttribute('viewBox', '0 0 448 512');
+                    trashIcon.setAttribute('class', 'canvas-trash-icon');
+                    trashIcon.style.display = 'none';
+                    trashIcon.style.position = 'absolute';
+                    trashIcon.style.cursor = 'pointer';
+                    trashIcon.innerHTML = `<path fill="#ef4444" d="M135.2 17.7C140.2 7.4 150.5 0 162.3 0h123.4c11.8 0 22.1 7.4 27.1 17.7l19.8 38.3H432c8.8 0 16 7.2 16 16s-7.2 16-16 16h-16l-21.2 339.4c-2.6 41.2-36.7 72.3-77.9 72.3H131.1c-41.2 0-75.3-31.1-77.9-72.3L32 88H16C7.2 88 0 80.8 0 72s7.2-16 16-16h74.4l19.8-38.3zM131.1 464h185.8c23.2 0 42.2-17.5 43.5-40.7L381.2 88H66.8l21.2 335.3c1.3 23.2 20.3 40.7 43.5 40.7zM176 224c8.8 0 16 7.2 16 16v128c0 8.8-7.2 16-16 16s-16-7.2-16-16V240c0-8.8 7.2-16 16-16zm48 0c8.8 0 16 7.2 16 16v128c0 8.8-7.2 16-16 16s-16-7.2-16-16V240c0-8.8 7.2-16 16-16s16 7.2 16 16z"/>`;
+
+                    // Calcula a posição do ícone (meio da curva)
+                    const sourceX = sourceNode.offsetLeft + sourceNode.offsetWidth;
+                    const sourceY = sourceNode.offsetTop + sourceNode.offsetHeight / 2;
+                    const targetX = targetNode.offsetLeft;
+                    const targetY = targetNode.offsetTop + targetNode.offsetHeight / 2;
+                    const midX = (sourceX + targetX) / 2;
+                    const midY = (sourceY + targetY) / 2;
+                    trashIcon.setAttribute('x', String(midX - 10));
+                    trashIcon.setAttribute('y', String(midY - 10));
+                    trashIcon.style.pointerEvents = 'auto';
+
+                    // Eventos de hover
+                    group.addEventListener('mouseenter', () => {
+                        trashIcon.style.display = 'block';
+                    });
+                    group.addEventListener('mouseleave', () => {
+                        trashIcon.style.display = 'none';
+                    });
+
+                    // Evento de clique para remover a conexão
+                    trashIcon.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        if (tasksCollectionRef) {
+                            // Remove a conexão do array
+                            const taskDocRef = doc(tasksCollectionRef, task.id);
+                            const updatedConnections = (task.connections || []).filter((c: string) => c !== targetId);
+                            await updateDoc(taskDocRef, { connections: updatedConnections });
+                            showToast('Conexão removida!');
+                        }
+                    });
+
+                    group.appendChild(trashIcon);
+                    dom.canvasLinesSvg.appendChild(group);
+                    console.log(`[Canvas Draw] SUCCESS: Line drawn for ${task.id} -> ${targetId}`);
+                } else {
+                    console.warn(`[Canvas Draw] FAILED to draw line: Could not find nodes in cache. Source (${task.id}): ${!!sourceNode}, Target (${targetId}): ${!!targetNode}`);
+                }
+            });
+        }
+    });
+}
+
+function createSvgLine(sourceNode: HTMLElement, targetNode: HTMLElement, isLinkingLine = false, customTargetPoint?: {x: number, y: number}) {
+    // Adiciona marker de seta ao SVG se ainda não existir
+    if (dom.canvasLinesSvg && !dom.canvasLinesSvg.querySelector('marker#arrowhead')) {
+        const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+        defs.innerHTML = `
+            <marker id="arrowhead" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto">
+                <polygon points="0 0, 6 2, 0 4" fill="#6366f1"/>
+            </marker>
+        `;
+        dom.canvasLinesSvg.prepend(defs);
+    }
+    const sourceX = sourceNode.offsetLeft + sourceNode.offsetWidth;
+    const sourceY = sourceNode.offsetTop + sourceNode.offsetHeight / 2;
+    let targetX, targetY;
+    if (customTargetPoint) {
+        targetX = customTargetPoint.x;
+        targetY = customTargetPoint.y;
+    } else {
+        targetX = targetNode.offsetLeft;
+        targetY = targetNode.offsetTop + targetNode.offsetHeight / 2;
+    }
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    const controlPointOffset = Math.max(50, Math.abs(targetX - sourceX) * 0.3);
+    line.setAttribute('d', `M ${sourceX} ${sourceY} C ${sourceX + controlPointOffset} ${sourceY}, ${targetX - controlPointOffset} ${targetY}, ${targetX} ${targetY}`);
+    line.setAttribute('class', isLinkingLine ? 'linking-line' : 'canvas-line');
+    line.setAttribute('stroke', '#6366f1');
+    line.setAttribute('stroke-width', isLinkingLine ? '2' : '2');
+    line.setAttribute('fill', 'none');
+    line.setAttribute('opacity', isLinkingLine ? '0.7' : '1');
+    line.setAttribute('marker-end', 'url(#arrowhead)');
+    return line;
+}
+
+function syncCanvasTransforms() {
+    const transform = `translate(${canvasState.panOffsetX}px, ${canvasState.panOffsetY}px) scale(${canvasState.zoom})`;
+    dom.taskCanvas.style.transform = transform;
+    dom.canvasLinesSvg.style.transform = transform;
+}
+
+
+async function openCanvasPopup(taskId: string, nodeElement: HTMLElement) {
+    const task = tasksCache.find(t => t.id === taskId);
+    if (!task || !userId) return;
+
+    dom.canvasPopupTitle.textContent = task.text;
+    dom.canvasPopupSubtasks.innerHTML = '<p>Carregando...</p>';
+    dom.canvasPopupNotes.innerHTML = '<p>Carregando...</p>';
+
+    const containerRect = dom.taskCanvasContainer.getBoundingClientRect();
+    const nodeRect = nodeElement.getBoundingClientRect();
+    dom.canvasTaskPopup.style.left = `${nodeRect.right - containerRect.left + 15}px`;
+    dom.canvasTaskPopup.style.top = `${nodeRect.top - containerRect.top}px`;
+    dom.canvasTaskPopup.classList.remove('hidden');
+
+    const basePath = `artifacts/${appId}/users/${userId}/tasks/${taskId}`;
+    const [subtasksSnap, taskNotesSnap] = await Promise.all([
+        getDocs(query(collection(db, `${basePath}/subtasks`))),
+        getDocs(query(collection(db, `${basePath}/taskNotes`)))
+    ]);
+    
+    dom.canvasPopupSubtasks.innerHTML = subtasksSnap.empty ? '<p class="text-gray-400">Nenhuma sub-tarefa.</p>' : subtasksSnap.docs.map(doc => {
+        const subtask = doc.data() as Subtask;
+        return `<p class="${subtask.completed ? 'completed' : ''}">${subtask.text}</p>`;
+    }).join('');
+
+    dom.canvasPopupNotes.innerHTML = taskNotesSnap.empty ? '<p class="text-gray-400">Nenhuma anotação.</p>' : taskNotesSnap.docs.map(doc => `<p>${doc.data().text}</p>`).join('');
+}
+
+function closeCanvasPopup() {
+    dom.canvasTaskPopup.classList.add('hidden');
+}
+
+// --- Auth & Init ---
+const setupAppEventListeners = () => {
+    eventManager.add(dom.addTaskBtn, 'click', handleAddTask);
+    eventManager.add(dom.saveNoteBtn, 'click', handleSaveNote);
+    eventManager.add(dom.toggleCompletedBtn, 'click', () => { 
+        showCompleted = !showCompleted; 
+        updateToggleCompletedButton(); 
+        loadTasks(); 
+    });
+    eventManager.add(dom.closeDetailModalBtn, 'click', closeTaskDetailModal);
+    eventManager.add(dom.addSubtaskBtn, 'click', handleAddSubtask);
+    eventManager.add(dom.addTaskNoteBtn, 'click', handleAddTaskNote);
+    eventManager.add(dom.calendarBtn, 'click', openCalendar);
+    eventManager.add(dom.closeCalendarBtn, 'click', closeCalendar);
+    eventManager.add(dom.prevMonthBtn, 'click', () => { calendarDate.setMonth(calendarDate.getMonth() - 1); renderCalendar(); });
+    eventManager.add(dom.nextMonthBtn, 'click', () => { calendarDate.setMonth(calendarDate.getMonth() + 1); renderCalendar(); });
+    const editBtn = dom.detailTitleContainer.querySelector('.edit-main-task-btn');
+    if (editBtn) eventManager.add(editBtn, 'click', toggleMainTaskEdit);
+    eventManager.add(dom.addCategoryBtn, 'click', (e: Event) => { e.preventDefault(); showCategoryPopup(); });
+    eventManager.add(dom.themeToggleBtn, 'click', toggleTheme);
+    eventManager.add(document, 'click', (e: MouseEvent) => {
+        const target = e.target as Node;
+        if (!dom.userMenuContainer.contains(target)) dom.userMenuDropdown.classList.add('hidden');
+        if (!dom.canvasTaskPopup.classList.contains('hidden') && !dom.canvasTaskPopup.contains(target) && !(e.target as HTMLElement).closest('.canvas-task-node')) {
+            closeCanvasPopup();
+        }
+    });
+    eventManager.add(dom.logoutBtn, 'click', async () => { await signOut(auth); dom.userMenuDropdown.classList.add('hidden'); });
+    eventManager.add(window, 'online', updateConnectionStatus);
+    eventManager.add(window, 'offline', updateConnectionStatus);
+    eventManager.add(dom.viewToggleBtn, 'click', toggleView);
+    setupCanvasEventListeners();
+    eventManager.add(dom.canvasPopupCloseBtn, 'click', closeCanvasPopup);
+    // Adiciona evento para abrir/fechar o dropdown do menu do usuário
+    if (dom.userMenuTrigger) {
+        eventManager.add(dom.userMenuTrigger, 'click', (e: MouseEvent) => {
+            e.stopPropagation();
+            dom.userMenuDropdown.classList.toggle('hidden');
+        });
+    }
+};
+
+function setupCanvasEventListeners() {
+    const container = dom.taskCanvasContainer;
+
+    const onMouseDown = (e: MouseEvent) => {
+        const target = e.target as HTMLElement;
+        const node = target.closest('.canvas-task-node') as HTMLElement;
+        
+        if (target.classList.contains('canvas-task-node-link-handle') && node) {
+            e.stopPropagation();
+            canvasState.isLinking = true;
+            canvasState.linkStartNodeId = node.dataset.id || null;
+            container.classList.add('linking-mode');
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            line.setAttribute('class', 'linking-line');
+            dom.canvasLinesSvg.appendChild(line);
+        } else if (node) {
+            e.stopPropagation();
+            canvasState.isDragging = true;
+            canvasState.draggedNode = node;
+            canvasState.startX = e.clientX;
+            canvasState.startY = e.clientY;
+            canvasState.nodeInitialX = node.offsetLeft;
+            canvasState.nodeInitialY = node.offsetTop;
+            node.style.zIndex = '20';
+        } else {
+            canvasState.isPanning = true;
+            container.classList.add('grabbing');
+            canvasState.startX = e.clientX - canvasState.panOffsetX;
+            canvasState.startY = e.clientY - canvasState.panOffsetY;
+        }
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+        if (canvasState.isLinking && canvasState.linkStartNodeId) {
+            const startNode = nodesCache[canvasState.linkStartNodeId];
+            if(!startNode) return;
+
+            const x1 = startNode.offsetLeft + startNode.offsetWidth;
+            const y1 = startNode.offsetTop + startNode.offsetHeight / 2;
+
+            const containerRect = container.getBoundingClientRect();
+            const mouseScreenX = e.clientX - containerRect.left;
+            const mouseScreenY = e.clientY - containerRect.top;
+            const x2 = (mouseScreenX - canvasState.panOffsetX) / canvasState.zoom;
+            const y2 = (mouseScreenY - canvasState.panOffsetY) / canvasState.zoom;
+
+            const linkingLine = dom.canvasLinesSvg.querySelector('.linking-line') as SVGPathElement;
+            if (linkingLine) {
+                 const controlPointOffset = Math.max(50, Math.abs(x2 - x1) * 0.3);
+                 linkingLine.setAttribute('d', `M ${x1} ${y1} C ${x1 + controlPointOffset} ${y1}, ${x2 - controlPointOffset} ${y2}, ${x2} ${y2}`);
+            }
+        } else if (canvasState.isDragging && canvasState.draggedNode) {
+            closeCanvasPopup();
+            const dx = (e.clientX - canvasState.startX) / canvasState.zoom;
+            const dy = (e.clientY - canvasState.startY) / canvasState.zoom;
+            canvasState.draggedNode.style.left = `${canvasState.nodeInitialX + dx}px`;
+            canvasState.draggedNode.style.top = `${canvasState.nodeInitialY + dy}px`;
+            drawAllLines();
+        } else if (canvasState.isPanning) {
+            closeCanvasPopup();
+            canvasState.panOffsetX = e.clientX - canvasState.startX;
+            canvasState.panOffsetY = e.clientY - canvasState.startY;
+            syncCanvasTransforms();
+        }
+    };
+
+    const onMouseUp = async (e: MouseEvent) => {
+        try {
+            const target = e.target as HTMLElement;
+            const targetNodeEl = target.closest('.canvas-task-node') as HTMLElement;
+
+            if (canvasState.isLinking && canvasState.linkStartNodeId) {
+                console.log(`[Canvas] Linking ended. Start node: ${canvasState.linkStartNodeId}`);
+                const linkingLine = dom.canvasLinesSvg.querySelector('.linking-line');
+                if (linkingLine) linkingLine.remove();
+
+                if (targetNodeEl && targetNodeEl.dataset.id !== canvasState.linkStartNodeId) {
+                    const targetId = targetNodeEl.dataset.id;
+                    // Corrigir: calcular o ponto do mouse relativo ao card de destino
+                    const rect = targetNodeEl.getBoundingClientRect();
+                    const containerRect = dom.taskCanvasContainer.getBoundingClientRect();
+                    const offsetX = (e.clientX - rect.left);
+                    const offsetY = (e.clientY - rect.top);
+                    const targetX = targetNodeEl.offsetLeft + offsetX;
+                    const targetY = targetNodeEl.offsetTop + offsetY;
+                    // Aqui você pode usar targetX/targetY para desenhar a linha customizada, se quiser persistir, salve esses valores junto com a conexão
+                    if (targetId && tasksCollectionRef) {
+                        await updateDoc(doc(tasksCollectionRef, canvasState.linkStartNodeId), {
+                            connections: arrayUnion(targetId)
+                        });
+                        console.log(`[Canvas] Firestore update successful.`);
+                    }
+                } else {
+                    console.log(`[Canvas] No valid target node found.`);
+                }
+            } else if (canvasState.isDragging && canvasState.draggedNode) {
+                const taskId = canvasState.draggedNode.dataset.id;
+                const dx = e.clientX - canvasState.startX;
+                const dy = e.clientY - canvasState.startY;
+
+                if (Math.abs(dx) > 5 || Math.abs(dy) > 5) { // It's a drag
+                    if (taskId && tasksCollectionRef) {
+                        const finalX = canvasState.draggedNode.offsetLeft;
+                        const finalY = canvasState.draggedNode.offsetTop;
+                        await updateDoc(doc(tasksCollectionRef, taskId), { x: finalX, y: finalY });
+                    }
+                } else { // It's a click
+                    if (taskId) {
+                        openCanvasPopup(taskId, canvasState.draggedNode);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error("Error during canvas mouseup operation:", error);
+            showToast("Falha ao criar conexão. Verifique o console para detalhes.");
+        } finally {
+            // This block ALWAYS runs, ensuring the UI state is never stuck.
+            if (canvasState.isDragging && canvasState.draggedNode) {
+                canvasState.draggedNode.style.zIndex = '10';
+            }
+            if (canvasState.isPanning) {
+                container.classList.remove('grabbing');
+            }
+            if(canvasState.isLinking) {
+                const linkingLine = dom.canvasLinesSvg.querySelector('.linking-line');
+                if (linkingLine) linkingLine.remove();
+                container.classList.remove('linking-mode');
+            }
+            
+            canvasState.isLinking = false;
+            canvasState.isDragging = false;
+            canvasState.isPanning = false;
+            canvasState.draggedNode = null;
+            canvasState.linkStartNodeId = null;
+        }
+    };
+    
+    const onWheel = (e: WheelEvent) => {
+        e.preventDefault();
+        closeCanvasPopup();
+        const rect = container.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        const oldZoom = canvasState.zoom;
+        const zoomFactor = 1.1;
+        let newZoom = e.deltaY < 0 ? oldZoom * zoomFactor : oldZoom / zoomFactor;
+        newZoom = Math.max(0.2, Math.min(newZoom, 3));
+        const pointX = (mouseX - canvasState.panOffsetX) / oldZoom;
+        const pointY = (mouseY - canvasState.panOffsetY) / oldZoom;
+        canvasState.panOffsetX = mouseX - pointX * newZoom;
+        canvasState.panOffsetY = mouseY - pointY * newZoom;
+        canvasState.zoom = newZoom;
+        syncCanvasTransforms();
+    };
+
+    eventManager.add(container, 'mousedown', onMouseDown);
+    eventManager.add(window, 'mousemove', onMouseMove);
+    eventManager.add(window, 'mouseup', onMouseUp);
+    eventManager.add(container, 'wheel', onWheel);
+}
+
+
+const initApp = () => {
+    setupFirestoreCollections();
+    setupAppEventListeners();
+    loadAndRenderAll();
+    setButtonsDisabled(false);
+};
+
+const cleanupApp = () => {
+    eventManager.removeAll();
+    unsubscribeAll();
+    
+    if(dom.notesList) dom.notesList.innerHTML = '';
+    if(dom.taskList) dom.taskList.innerHTML = '';
+    if(dom.categorySelect) dom.categorySelect.innerHTML = '';
+    if(dom.filterContainer) dom.filterContainer.innerHTML = '';
+    if (dom.taskCanvas) dom.taskCanvas.innerHTML = '';
+    if (dom.canvasLinesSvg) dom.canvasLinesSvg.innerHTML = '';
+    
+    nodesCache = {};
+    tasksCache = [];
+    currentView = 'list';
+    canvasState = {
+        isPanning: false,
+        isDragging: false,
+        isLinking: false,
+        draggedNode: null as HTMLElement | null,
+        linkStartNodeId: null as string | null,
+        startX: 0,
+        startY: 0,
+        panOffsetX: 0,
+        panOffsetY: 0,
+        zoom: 1,
+        nodeInitialX: 0,
+        nodeInitialY: 0,
+    };
+    setButtonsDisabled(true);
+};
+
+const setupFirestoreCollections = () => {
+    if (!userId) return;
+    const basePath = `artifacts/${appId}/users/${userId}`;
+    tasksCollectionRef = collection(db, `${basePath}/tasks`);
+    notesCollectionRef = collection(db, `${basePath}/notes`);
+    categoriesCollectionRef = collection(db, `${basePath}/categories`);
+};
+
+const loadAndRenderAll = () => {
+    updateConnectionStatus();
+    displayCurrentDate();
+    updateToggleCompletedButton();
+    loadCategories();
+    if (currentView === 'list') {
+        loadTasks();
+    } else {
+        requestAnimationFrame(() => loadCanvasTasks());
+    }
+    loadNotes();
+};
+
+function showLogin() {
+    dom.loginContainer.classList.remove('hidden');
+    dom.registerContainer.classList.add('hidden');
+    dom.loginError.textContent = '';
+}
+function showRegister() {
+    dom.loginContainer.classList.add('hidden');
+    dom.registerContainer.classList.remove('hidden');
+    dom.registerError.textContent = '';
+}
+if (dom.showRegisterBtn) dom.showRegisterBtn.onclick = showRegister;
+if (dom.showLoginBtn) dom.showLoginBtn.onclick = showLogin;
+if (dom.loginForm) dom.loginForm.onsubmit = async (e) => {
+    e.preventDefault();
+    dom.loginError.textContent = '';
+    const email = (document.getElementById('login-email') as HTMLInputElement).value.trim();
+    const password = (document.getElementById('login-password') as HTMLInputElement).value;
+    try {
+        await signInWithEmailAndPassword(auth, email, password);
+    } catch (err) {
+        dom.loginError.textContent = 'E-mail ou senha inválidos.';
+    }
+};
+if (dom.registerForm) dom.registerForm.onsubmit = async (e) => {
+    e.preventDefault();
+    dom.registerError.textContent = '';
+    const email = (document.getElementById('register-email') as HTMLInputElement).value.trim();
+    const password = (document.getElementById('register-password') as HTMLInputElement).value;
+    try {
+        await createUserWithEmailAndPassword(auth, email, password);
+        showLogin();
+        dom.loginError.textContent = 'Cadastro realizado! Faça login.';
+    } catch (err) {
+        dom.registerError.textContent = 'Erro ao cadastrar. Verifique o e-mail e senha.';
+    }
+};
+
+const start = async () => {
+    await initializeOfflinePersistence(showToast);
+    setButtonsDisabled(true);
+    onAuthStateChanged(auth, (user) => {
+        cleanupApp();
+        if (user) {
+            userId = user.uid;
+            initApp();
+            dom.appContainer.classList.remove('hidden');
+            dom.loginContainer.classList.add('hidden');
+            dom.registerContainer.classList.add('hidden');
+            if (user.email) {
+                dom.userEmail.textContent = user.email;
+                dom.userMenuContainer.classList.remove('hidden');
+            } else {
+                dom.userMenuContainer.classList.add('hidden');
+            }
+        } else {
+            setButtonsDisabled(true);
+            userId = null;
+            dom.appContainer.classList.add('hidden');
+            dom.loginContainer.classList.remove('hidden');
+            dom.registerContainer.classList.add('hidden');
+            dom.userMenuContainer.classList.add('hidden');
+        }
+    });
+};
+
+function showCategoryPopup() {
+    dom.categoryPopup.classList.remove('hidden');
+    dom.categoryPopupInput.value = '';
+    setTimeout(() => dom.categoryPopupInput.focus(), 50);
+}
+function hideCategoryPopup() {
+    dom.categoryPopup.classList.add('hidden');
+}
+if (dom.categoryPopupCancel) dom.categoryPopupCancel.onclick = hideCategoryPopup;
+if (dom.categoryPopupAdd) dom.categoryPopupAdd.onclick = async () => {
+    const name = dom.categoryPopupInput.value.trim();
+    if (name) {
+        await addNewCategory(name);
+        hideCategoryPopup();
+    } else {
+        dom.categoryPopupInput.focus();
+    }
+};
+if (dom.categoryPopupInput) dom.categoryPopupInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') (dom.categoryPopupAdd as HTMLButtonElement).click();
+    if (e.key === 'Escape') hideCategoryPopup();
+});
+
+// --- Theme ---
+function applyTheme(theme: string) {
+    if (theme === 'dark') {
+        document.documentElement.classList.add('dark');
+    } else {
+        document.documentElement.classList.remove('dark');
+    }
+}
+function toggleTheme() {
+    const current = localStorage.getItem('theme') || 'dark';
+    const next = current === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('theme', next);
+    applyTheme(next);
+    updateThemeButton(next);
+}
+function updateThemeButton(theme: string) {
+    if (!dom.themeToggleBtn) return;
+    dom.themeToggleBtn.innerHTML = theme === 'dark'
+        ? '<i class="fas fa-sun fa-lg"></i>'
+        : '<i class="fas fa-moon fa-lg"></i>';
+    dom.themeToggleBtn.title = theme === 'dark' ? 'Modo claro' : 'Modo escuro';
+}
+const savedTheme = localStorage.getItem('theme') || 'dark';
+applyTheme(savedTheme);
+updateThemeButton(savedTheme);
+
+// --- AI Analysis ---
+async function analyzeWithAI() {
+    if (!tasksCollectionRef || !notesCollectionRef || !navigator.onLine || !userId) {
+        showToast("A análise com IA requer uma conexão com a internet.");
+        return;
+    };
+    dom.aiAnalyzeContent.innerHTML = 'Analisando com Gemini...';
+    dom.aiAnalyzeModal.classList.remove('hidden');
+    
+    try {
+        const tasksSnap = await getDocs(query(tasksCollectionRef, where('completed', '==', false)));
+        const tasks = tasksSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Task));
+        const notesSnap = await getDocs(query(notesCollectionRef));
+        const notes = notesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Note));
+
+        if (tasks.length === 0 && notes.length === 0) {
+            dom.aiAnalyzeContent.innerHTML = 'Parabéns! Não há tarefas ou notas pendentes para analisar.';
+            return;
+        }
+
+        const summary = await getAiSummary(userId, tasks, notes);
+        dom.aiAnalyzeContent.innerHTML = marked.parse(summary);
+
+    } catch (error) {
+        console.error("Error during AI Analysis:", error);
+        dom.aiAnalyzeContent.innerHTML = "Ocorreu um erro ao gerar a análise. Por favor, tente novamente.";
+    }
+}
+
+if (dom.aiAnalyzeBtn) dom.aiAnalyzeBtn.onclick = analyzeWithAI;
+if (dom.closeAiAnalyzeModal) dom.closeAiAnalyzeModal.onclick = () => dom.aiAnalyzeModal.classList.add('hidden');
+if (dom.aiAnalyzeModal) dom.aiAnalyzeModal.addEventListener('click', e => { if (e.target === dom.aiAnalyzeModal) dom.aiAnalyzeModal.classList.add('hidden'); });
+
+// Observer para garantir que o evento do botão de categoria sempre funcione, mesmo se o botão for criado depois
+(function ensureAddCategoryBtnEvent() {
+    function addCategoryBtnHandler(btn: HTMLElement) {
+        if (btn.getAttribute('data-listener-added')) return;
+        btn.addEventListener('click', (e) => {
+            console.log('[Categoria] Clique no botão + de categoria (observer)');
+            e.preventDefault();
+            const popup = document.getElementById('category-popup');
+            console.log('[Categoria] Popup encontrado (observer):', !!popup);
+            if (popup) popup.classList.remove('hidden');
+            const input = document.getElementById('category-popup-input') as HTMLInputElement;
+            console.log('[Categoria] Input encontrado (observer):', !!input);
+            if (input) {
+                input.value = '';
+                setTimeout(() => {
+                    input.focus();
+                    console.log('[Categoria] Input focado (observer)');
+                }, 50);
+            }
+        });
+        btn.setAttribute('data-listener-added', 'true');
+        console.log('[Categoria] Evento de clique adicionado ao botão + de categoria (observer)');
+    }
+    // Tenta adicionar imediatamente
+    const btn = document.getElementById('add-category-btn');
+    if (btn) addCategoryBtnHandler(btn);
+    // Observa o DOM para o caso do botão ser criado depois
+    const observer = new MutationObserver(() => {
+        const btn = document.getElementById('add-category-btn');
+        if (btn) addCategoryBtnHandler(btn);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+})();
+
+start();

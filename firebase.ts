@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore, enableIndexedDbPersistence, Firestore } from "firebase/firestore";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import { getAuth } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { getFirestore, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 // Config
 const firebaseConfig = {
@@ -21,37 +21,17 @@ const firebaseConfig = {
 export const appId = 'default-task-manager';
 export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-
-let dbInstance: Firestore | null = null;
-
-export const getDb = async () => {
-    if (!dbInstance) {
-        const db = getFirestore(app);
-        try {
-            // A persistência é ativada na primeira vez que o DB é solicitado
-            await enableIndexedDbPersistence(db);
-        } catch (err: any) {
-            if (err.code == 'failed-precondition') {
-                console.warn('Firestore persistence failed: multiple tabs open.');
-            } else if (err.code == 'unimplemented') {
-                console.error('Firestore persistence not supported in this browser.');
-            }
-        }
-        dbInstance = db;
-    }
-    return dbInstance;
-};
-
-// A exportação direta de 'db' e a inicialização com .then() foram removidas para evitar condições de corrida.
+export const db = getFirestore(app);
 
 export const initializeOfflinePersistence = async (showToast: (message: string, duration?: number) => void) => {
-    // Esta função agora apenas garante a inicialização e mostra toasts específicos.
     try {
-        await getDb();
+        await enableIndexedDbPersistence(db);
     } catch (err: any) {
-         if (err.code == 'failed-precondition') {
+        if (err.code == 'failed-precondition') {
+            console.warn('Firestore persistence failed: multiple tabs open.');
             showToast('Os dados não serão salvos offline. Mantenha apenas uma aba do app aberta.', 5000);
         } else if (err.code == 'unimplemented') {
+            console.error('Firestore persistence not supported in this browser.');
             showToast('Seu navegador não suporta modo offline.', 5000);
         }
     }

@@ -11,11 +11,13 @@ export interface Task {
     completed: boolean;
     category: string | null;
     createdAt: Timestamp;
-    dueDate?: Timestamp | null;
+    dueDate: Timestamp | null;
     subtaskCount: number;
-    completedSubtaskCount: number;
     noteCount: number;
-    canvasPos?: { x: number, y: number }; // Posição do card no canvas
+    completedSubtaskCount: number;
+    x?: number;
+    y?: number;
+    connections?: string[];
 }
 
 export interface Note {
