@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Atarefado</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <!-- O Vite irá injetar o CSS correto após o build -->
+    <!-- <link rel="stylesheet" href="index.css"> -->
+    <!-- <link rel="stylesheet" href="/index.css"> -->
+</head>
+<body class="bg-gray-100 text-gray-900">
+    <!-- Offline Banner -->
+    <div id="offline-banner" class="hidden sticky top-0 bg-yellow-400 text-yellow-800 text-center p-2 z-[2000] shadow dark:bg-yellow-500/20 dark:text-yellow-300">
+        <i class="fas fa-exclamation-triangle mr-2"></i>
+        <strong>Modo Offline:</strong> Suas alterações são salvas localmente e serão sincronizadas ao reconectar.
+    </div>
+
+    <!-- Menu do usuário -->
+    <div id="user-menu-container" class="hidden relative">
+        <div id="user-menu-trigger" class="flex items-center gap-2 bg-white dark:bg-gray-800 px-4 py-2 rounded-full shadow cursor-pointer border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700 transition">
+            <i class="fas fa-user-circle text-xl text-gray-600 dark:text-gray-300"></i>
+            <span id="user-email" class="font-medium text-gray-800 dark:text-gray-100 text-sm"></span>
+            <i class="fas fa-chevron-down text-xs ml-1 text-gray-400"></i>
+        </div>
+        <div id="user-menu-dropdown" class="hidden absolute w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-2">
+            <button id="logout-btn" class="w-full text-left px-4 py-2 text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700">Sair</button>
+        </div>
+    </div>
+    <!-- Tela de Login -->
+    <div id="login-container" class="flex flex-col items-center justify-center min-h-screen">
+        <div class="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-sm">
+            <h2 class="text-2xl font-bold mb-6 text-center">Entrar</h2>
+            <form id="login-form" class="flex flex-col gap-4">
+                <input type="email" id="login-email" class="p-3 border rounded-lg bg-gray-50 dark:bg-gray-700 dark:border-gray-600" placeholder="E-mail" required autocomplete="username">
+                <input type="password" id="login-password" class="p-3 border rounded-lg bg-gray-50 dark:bg-gray-700 dark:border-gray-600" placeholder="Senha" required autocomplete="current-password">
+                <button type="submit" class="bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-blue-700">Entrar</button>
+            </form>
+            <div class="mt-4 text-center">
+                <span class="text-sm text-gray-600 dark:text-gray-400">Não tem conta?</span>
+                <button id="show-register-btn" class="text-blue-600 hover:underline text-sm ml-1">Cadastrar</button>
+            </div>
+            <div id="login-error" class="text-red-500 text-sm mt-2 text-center"></div>
+        </div>
+    </div>
+    <!-- Tela de Cadastro -->
+    <div id="register-container" class="hidden flex flex-col items-center justify-center min-h-screen">
+        <div class="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-sm">
+            <h2 class="text-2xl font-bold mb-6 text-center">Cadastro</h2>
+            <form id="register-form" class="flex flex-col gap-4">
+                <input type="email" id="register-email" class="p-3 border rounded-lg bg-gray-50 dark:bg-gray-700 dark:border-gray-600" placeholder="E-mail" required autocomplete="username">
+                <input type="password" id="register-password" class="p-3 border rounded-lg bg-gray-50 dark:bg-gray-700 dark:border-gray-600" placeholder="Senha" required autocomplete="new-password">
+                <button type="submit" class="bg-green-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-green-700">Cadastrar</button>
+            </form>
+            <div class="mt-4 text-center">
+                <span class="text-sm text-gray-600 dark:text-gray-400">Já tem conta?</span>
+                <button id="show-login-btn" class="text-blue-600 hover:underline text-sm ml-1">Entrar</button>
+            </div>
+            <div id="register-error" class="text-red-500 text-sm mt-2 text-center"></div>
+        </div>
+    </div>
+    <!-- App principal -->
+    <div id="app-container" class="hidden flex flex-col md:flex-row h-screen">
+        <!-- Barra Lateral de Notas -->
+        <aside class="w-full md:w-1/3 lg:w-1/4 bg-white dark:bg-slate-900 p-6 border-r border-gray-200 dark:border-gray-700 flex flex-col">
+            <h2 class="text-2xl font-bold mb-4">
+                <i class="fas fa-feather-alt mr-2"></i>Anotações Gerais
+            </h2>
+            <div class="flex flex-col space-y-4">
+                <textarea id="note-input" class="w-full h-32 p-3 border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 rounded-lg" placeholder="Escreva uma nova nota..."></textarea>
+                <input type="hidden" id="note-id">
+                <button id="save-note-btn" class="w-full bg-indigo-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-indigo-700">
+                    Salvar Nota
+                </button>
+            </div>
+            <div class="mt-6 flex-grow overflow-y-auto">
+                <h3 class="text-lg font-semibold text-gray-700 dark:text-gray-300 mb-3">Notas Salvas</h3>
+                <div id="notes-list" class="space-y-3"></div>
+            </div>
+        </aside>
+
+        <!-- Conteúdo Principal - Agenda -->
+        <main class="w-full md:w-2/3 lg:w-3/4 p-6 md:p-8 flex flex-col">
+        <header class="flex justify-between items-center mb-6">
+            <div>
+                <h1 class="text-3xl md:text-4xl font-bold">Agenda de Tarefas</h1>
+                <p id="current-date" class="text-lg text-gray-500 dark:text-gray-400"></p>
+            </div>
+            <div class="flex items-center gap-4">
+                <div id="connection-status" class="flex items-center gap-2 text-sm font-medium mr-2">
+                    <span id="connection-dot" class="w-3 h-3 rounded-full"></span>
+                    <span id="connection-text"></span>
+                </div>
+                <button id="view-toggle-btn" class="text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-400 bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 rounded-full p-2 transition-colors" title="Alternar Visualização"><i id="view-toggle-icon" class="fas fa-project-diagram fa-lg"></i></button>
+                <button id="calendar-btn" class="text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-400 bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 rounded-full p-2 transition-colors" title="Abrir calendário"><i class="fas fa-calendar-alt fa-lg"></i></button>
+                <button id="theme-toggle-btn" class="text-gray-500 hover:text-yellow-500 dark:text-gray-400 dark:hover:text-yellow-400 bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 rounded-full p-2 transition-colors" title="Modo escuro"><i class="fas fa-moon fa-lg"></i></button>
+                <button id="ai-analyze-btn" class="text-gray-500 hover:text-green-600 dark:text-gray-400 dark:hover:text-green-400 bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 rounded-full p-2 transition-colors" title="Análise com IA"><i class="fas fa-robot fa-lg"></i></button>
+            </div>
+        </header>
+                 <div class="mb-6 bg-white dark:bg-slate-900 p-4 rounded-lg shadow">
+                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <input type="text" id="task-input" class="w-full p-3 border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 rounded-lg" placeholder="Adicionar nova tarefa principal..." required>
+                        <div class="flex gap-2 items-center">
+                            <select id="category-select" class="w-full p-3 border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                                <option value="Nenhuma">Sem Categoria</option>
+                            </select>
+                            <button id="add-category-btn" class="bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 p-3 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600" title="Adicionar nova categoria">
+                                <i class="fas fa-plus"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                         <label for="due-date-input" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Previsão de Término</label>
+                        <input type="date" id="due-date-input" class="w-full p-3 border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                    </div>
+                    <div class="flex items-center space-x-3 mt-4">
+                        <button id="add-task-btn" class="bg-indigo-600 text-white font-semibold py-3 px-6 rounded-lg hover:bg-indigo-700 flex-1">
+                            <i class="fas fa-plus mr-2"></i>Adicionar Tarefa
+                        </button>
+                    </div>
+                </div>
+
+                <div class="flex-grow bg-white dark:bg-slate-900 p-6 rounded-xl shadow-lg overflow-y-auto">
+                    <div class="flex justify-between items-center mb-4 border-b dark:border-gray-700 pb-4">
+                         <div>
+                            <h2 class="text-2xl font-bold">Minhas Tarefas</h2>
+                             <div id="filter-container" class="flex items-center gap-2 mt-2 flex-wrap"></div>
+                        </div>
+                        <button id="toggle-completed-btn" class="text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 font-medium py-2 px-3 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 flex items-center gap-2"></button>
+                    </div>
+                    <div id="task-list" class="space-y-4"></div>
+                </div>
+            </div>
+             <!-- Canvas View -->
+            <div id="canvas-modal" class="hidden absolute inset-0 bg-gray-100 dark:bg-slate-900 z-40">
+                <div id="task-canvas-container" class="relative w-full h-full overflow-auto">
+                    <div id="canvas-content" class="absolute top-0 left-0">
+                        <!-- Cards do Canvas serão injetados aqui -->
+                    </div>
+                    <svg id="canvas-lines-svg" class="absolute top-0 left-0 w-full h-full pointer-events-none z-[5]"></svg>
+                </div>
+                <button id="close-canvas-modal-btn" class="absolute top-4 right-4 bg-white dark:bg-gray-700 rounded-full p-2 shadow-lg z-50">
+                    <i class="fas fa-times text-xl"></i>
+                </button>
+            </div>
+        </main>
+    </div>
+    
+    <!-- Canvas Task Info Popup -->
+    <div id="canvas-task-popup" class="hidden absolute bg-white dark:bg-gray-800 rounded-lg shadow-2xl w-80 max-h-[40vh] flex flex-col border border-gray-300 dark:border-gray-600 z-50">
+        <div class="p-3 border-b dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-700">
+            <h3 id="canvas-popup-title" class="font-bold text-lg truncate"></h3>
+            <button id="canvas-popup-close-btn" class="text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-500"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="flex-grow p-3 overflow-y-auto space-y-4">
+            <div>
+                <h4 class="font-semibold text-md mb-2">Sub-tarefas</h4>
+                <div id="canvas-popup-subtasks" class="space-y-2 text-sm"></div>
+            </div>
+            <div>
+                <h4 class="font-semibold text-md mb-2">Anotações</h4>
+                <div id="canvas-popup-notes" class="space-y-2 text-sm"></div>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- Modals -->
+    <div id="task-detail-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 p-4">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-2xl w-full max-w-4xl h-full max-h-[90vh] flex flex-col">
+            <div id="detail-header" class="p-4 border-b dark:border-gray-700 flex justify-between items-center flex-shrink-0">
+                 <div id="detail-title-container" class="flex items-center gap-3">
+                    <h2 id="detail-task-title" class="text-2xl font-bold"></h2>
+                    <button class="edit-main-task-btn text-gray-400 hover:text-indigo-600"><i class="fas fa-pencil-alt"></i></button>
+                 </div>
+                 <div id="detail-edit-container" class="hidden flex-grow flex items-center gap-2">
+                    <input type="text" id="detail-edit-input" class="flex-grow p-2 border dark:border-gray-600 rounded-lg text-2xl font-bold bg-gray-50 dark:bg-gray-700">
+                    <button id="detail-save-btn" class="bg-green-500 text-white px-3 py-2 rounded-lg"><i class="fas fa-check"></i></button>
+                    <button id="detail-cancel-btn" class="bg-red-500 text-white px-3 py-2 rounded-lg"><i class="fas fa-times"></i></button>
+                 </div>
+                 <button id="close-detail-modal-btn" class="text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-500 ml-4"><i class="fas fa-times fa-2x"></i></button>
+            </div>
+            <div class="flex-grow p-4 grid grid-cols-1 md:grid-cols-2 gap-6 overflow-y-auto">
+                <!-- Coluna de Sub-tarefas -->
+                <div class="flex flex-col min-h-0">
+                    <h3 class="font-bold text-lg mb-2 flex-shrink-0">Sub-tarefas</h3>
+                    <div class="flex-grow overflow-y-auto mb-4 pr-2">
+                        <div id="subtask-list" class="space-y-2"></div>
+                    </div>
+                    <div class="flex-shrink-0 flex gap-2 mt-auto pt-2">
+                        <input type="text" id="subtask-input" class="flex-grow p-2 border dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-gray-700" placeholder="Nova sub-tarefa...">
+                        <button id="add-subtask-btn" class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600"><i class="fas fa-plus"></i></button>
+                    </div>
+                </div>
+                <!-- Coluna de Anotações -->
+                <div class="flex flex-col min-h-0">
+                    <h3 class="font-bold text-lg mb-2 flex-shrink-0">Anotações da Tarefa</h3>
+                    <div class="flex-grow overflow-y-auto mb-2">
+                        <div id="task-notes-list" class="space-y-2"></div>
+                    </div>
+                    <div class="flex-shrink-0 flex gap-2 mt-auto pt-2">
+                        <textarea id="task-note-input" class="flex-grow p-2 border dark:border-gray-600 rounded-lg h-12 resize-none bg-gray-50 dark:bg-gray-700" placeholder="Adicionar anotação..."></textarea>
+                        <button id="add-task-note-btn" class="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 h-12 flex items-center justify-center"><i class="fas fa-plus"></i></button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="calendar-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 p-4">
+         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-2xl w-full max-w-4xl h-full max-h-[90vh] flex flex-col">
+            <div class="p-4 border-b dark:border-gray-700 flex justify-between items-center">
+                <div class="flex items-center gap-4">
+                     <button id="prev-month-btn" class="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"><i class="fas fa-chevron-left"></i></button>
+                     <h2 id="calendar-month-year" class="text-2xl font-bold"></h2>
+                     <button id="next-month-btn" class="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"><i class="fas fa-chevron-right"></i></button>
+                </div>
+                <button id="close-calendar-btn" class="text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-500"><i class="fas fa-times fa-2x"></i></button>
+            </div>
+            <div class="flex-grow flex flex-col md:flex-row gap-4 overflow-hidden p-4">
+                <div class="w-full md:w-3/5 flex flex-col">
+                    <div class="grid grid-cols-7 gap-1 text-center font-semibold text-gray-600 dark:text-gray-400 mb-2">
+                        <div>Dom</div><div>Seg</div><div>Ter</div><div>Qua</div><div>Qui</div><div>Sex</div><div>Sáb</div>
+                    </div>
+                    <div id="calendar-grid" class="grid grid-cols-7 gap-1 flex-grow"></div>
+                </div>
+                <div id="calendar-details-pane" class="w-full md:w-2/5 bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4 overflow-y-auto">
+                    <h3 id="details-day-header" class="text-lg font-bold border-b dark:border-gray-700 pb-2 mb-3">Selecione um dia</h3>
+                    <div id="details-content">
+                         <p class="text-gray-500 dark:text-gray-400">Nenhum dia selecionado.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Popup para nova categoria -->
+    <div id="category-popup" class="hidden fixed z-50 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 p-4 flex flex-col gap-3 w-72" style="min-width: 250px;">
+        <label for="category-popup-input" class="font-semibold">Nova Categoria</label>
+        <input id="category-popup-input" type="text" class="p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-gray-50 dark:bg-gray-700 dark:border-gray-600" placeholder="Nome da categoria">
+        <div class="flex gap-2 justify-end">
+            <button id="category-popup-cancel" class="px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-500">Cancelar</button>
+            <button id="category-popup-add" class="px-4 py-2 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-700">Adicionar</button>
+        </div>
+    </div>
+
+    <!-- Modal de Análise com IA -->
+    <div id="ai-analyze-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-70 flex items-center justify-center z-50 p-4">
+        <div class="bg-white dark:bg-gray-900 rounded-lg shadow-2xl w-full max-w-2xl relative max-h-[80vh] flex flex-col">
+            <div class="p-4 border-b dark:border-gray-700">
+                <h2 class="text-2xl font-bold"><i class="fas fa-robot mr-2"></i>Análise Inteligente</h2>
+                <button id="close-ai-analyze-modal" class="absolute top-3 right-3 text-gray-400 hover:text-red-500"><i class="fas fa-times fa-lg"></i></button>
+            </div>
+            <div id="ai-analyze-content" class="prose dark:prose-invert max-w-none p-6 overflow-y-auto whitespace-pre-line"></div>
+        </div>
+    </div>
+    
+    <!-- Toast Notification Container -->
+    <div id="toast-container"></div>
+
+<div class="fixed bottom-4 right-4 text-xs text-gray-500 dark:text-gray-400 z-40">
+        Criado por <a href="https://github.com/alyssonHK">Alysson Krombauer</a>
+    </div>
+
+    <!-- O Vite irá injetar o JS correto após o build -->
+    <script type="module" src="./main.js"></script>
+</body>
+</html>
