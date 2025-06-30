@@ -7,7 +7,7 @@ import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndP
 import { doc, collection, onSnapshot, addDoc, updateDoc, deleteDoc, query, where, getDocs, setDoc, Timestamp, increment, arrayUnion, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { auth, db, appId, initializeOfflinePersistence } from './firebase.js';
 import { getAiSummary } from './gemini.js';
-import { Task, Note, Subtask } from "./types.js";
+import { Task, Note, Subtask, FreeCard } from "./types.js";
 
 // TypeScript declaration for the 'marked' library loaded from CDN
 declare var marked: any;
@@ -96,7 +96,7 @@ const dom = {
 
 // --- State ---
 let userId: string | null = null;
-let notesCollectionRef: any, tasksCollectionRef: any, categoriesCollectionRef: any;
+let notesCollectionRef: any, tasksCollectionRef: any, categoriesCollectionRef: any, freeCardsCollectionRef: any;
 let currentFilter = 'Todos';
 let showCompleted = false;
 let activeTaskId: string | null = null;
@@ -118,10 +118,10 @@ let canvasState = {
     nodeInitialY: 0,
 };
 let tasksCache: Task[] = [];
+let freeCardsCache: FreeCard[] = [];
 let nodesCache: { [taskId: string]: HTMLElement } = {};
+let freeCardNodesCache: { [freeCardId: string]: HTMLElement } = {};
 let advancedTaskFilter = 'todas';
-// Cards livres do canvas (não tarefas)
-let freeCanvasCards: { id: string, x: number, y: number, text: string }[] = [];
 
 // --- Listener Management ---
 let unsubs: { [key: string]: (() => void) | null } = {
@@ -129,6 +129,7 @@ let unsubs: { [key: string]: (() => void) | null } = {
     notes: null,
     categories: null,
     canvas_tasks: null,
+    canvas_free_cards: null,
     task_details: null,
 };
 
@@ -242,6 +243,53 @@ async function handleAddTask() {
     await addDoc(tasksCollectionRef, { text: taskText, completed: false, category, createdAt: Timestamp.now(), dueDate, subtaskCount: 0, noteCount: 0, completedSubtaskCount: 0 });
     if (!navigator.onLine) showToast(OFFLINE_SAVE_MESSAGE);
     dom.taskInput.value = ''; dom.dueDateInput.value = '';
+}
+
+async function handleAddFreeCard() {
+    console.log('[Free Card] handleAddFreeCard chamada');
+    
+    const freeCardInput = document.getElementById('free-card-input') as HTMLTextAreaElement;
+    if (!freeCardInput) {
+        console.error('[Free Card] Input não encontrado');
+        return;
+    }
+    
+    const freeCardText = freeCardInput.value.trim();
+    console.log('[Free Card] Texto:', freeCardText);
+    
+    if (!freeCardText) {
+        console.warn('[Free Card] Texto vazio');
+        showToast('Digite um texto para o card livre');
+        return;
+    }
+    
+    if (!freeCardsCollectionRef) {
+        console.error('[Free Card] Collection ref não encontrada');
+        showToast('Erro: Collection não configurada');
+        return;
+    }
+    
+    try {
+        console.log('[Free Card] Salvando no Firestore...');
+        const docRef = await addDoc(freeCardsCollectionRef, { 
+            text: freeCardText, 
+            createdAt: Timestamp.now(),
+            connections: []
+        });
+        console.log('[Free Card] Documento criado com ID:', docRef.id);
+        
+        if (!navigator.onLine) {
+            showToast(OFFLINE_SAVE_MESSAGE);
+        } else {
+            showToast('Card livre criado com sucesso!');
+        }
+        
+        freeCardInput.value = '';
+        hideFreeCardPopup();
+    } catch (error) {
+        console.error('[Free Card] Erro ao criar:', error);
+        showToast('Erro ao criar card livre. Tente novamente.');
+    }
 }
 
 async function handleSaveNote() {
@@ -675,6 +723,15 @@ function toggleView() {
     dom.viewToggleIcon.className = isListView ? 'fas fa-project-diagram fa-lg' : 'fas fa-list-ul fa-lg';
     dom.viewToggleBtn.title = isListView ? 'Visualização em Canvas' : 'Visualização em Lista';
 
+    // Mostrar/ocultar botão de free card baseado na visualização
+    const addFreeCardBtn = document.getElementById('add-free-card-btn');
+    if (addFreeCardBtn) {
+        addFreeCardBtn.classList.toggle('hidden', isListView);
+        console.log('[Free Card] Toggle view - Botão:', isListView ? 'oculto' : 'visível');
+    } else {
+        console.warn('[Free Card] Toggle view - Botão não encontrado');
+    }
+
     if (isListView) {
         unsubscribe('canvas_tasks');
         loadTasks();
@@ -687,22 +744,25 @@ function toggleView() {
 }
 
 async function loadCanvasTasks() {
-    if (!tasksCollectionRef) return;
+    if (!tasksCollectionRef || !freeCardsCollectionRef) return;
 
     // --- 1. Cleanup & Setup ---
     unsubscribe('canvas_tasks');
+    unsubscribe('canvas_free_cards');
     dom.taskCanvas.innerHTML = '';
     dom.canvasLinesSvg.innerHTML = '';
     nodesCache = {}; // Reset caches
+    freeCardNodesCache = {};
     tasksCache = [];
+    freeCardsCache = [];
     syncCanvasTransforms(); // Maintain pan/zoom
 
-    // --- 2. Attach a single, powerful listener for state reconciliation ---
+    // --- 2. Attach listeners for tasks and free cards ---
     unsubs.canvas_tasks = onSnapshot(query(tasksCollectionRef), (snapshot) => {
-        console.log("[Canvas Sync] onSnapshot triggered. Reconciling entire canvas state.");
+        console.log("[Canvas Sync] Tasks onSnapshot triggered.");
 
         const latestTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Task));
-        tasksCache = latestTasks; // Update the main task cache with the source of truth
+        tasksCache = latestTasks;
         
         const existingNodeIds = new Set(Object.keys(nodesCache));
         const latestTaskIds = new Set(latestTasks.map(t => t.id));
@@ -710,7 +770,7 @@ async function loadCanvasTasks() {
         const batch = writeBatch(db);
         let hasPositionUpdates = false;
 
-        // --- 3. Reconcile Nodes: Update existing ones and add new ones ---
+        // --- 3. Reconcile Task Nodes ---
         latestTasks.forEach((task, index) => {
             let node = nodesCache[task.id];
             
@@ -721,13 +781,11 @@ async function loadCanvasTasks() {
                 task.x = (index % columns) * 250 + 50;
                 task.y = Math.floor(index / columns) * 120 + 50;
                 
-                // Batch the update to Firestore
                 batch.update(doc(tasksCollectionRef, task.id), { x: task.x, y: task.y });
                 hasPositionUpdates = true;
             }
 
-            if (node) { // If node already exists, update its properties
-                // Don't update the position if the user is currently dragging this specific node
+            if (node) {
                 if (canvasState.draggedNode?.dataset.id !== task.id) {
                     node.style.left = `${task.x}px`;
                     node.style.top = `${task.y}px`;
@@ -737,21 +795,18 @@ async function loadCanvasTasks() {
                     textEl.textContent = task.text;
                 }
                 task.completed ? node.classList.add('completed-node') : node.classList.remove('completed-node');
-
-            } else { // If node is new, create it and add it to the DOM and cache
+            } else {
                 renderCanvasNode(task); 
             }
         });
         
-        // If we created any new positions, commit them to Firestore
         if (hasPositionUpdates) {
              batch.commit().catch(e => console.warn("Falha ao salvar posições iniciais durante a sincronização.", e));
         }
 
-        // --- 4. Reconcile Nodes: Remove old ones ---
+        // Remove old task nodes
         existingNodeIds.forEach(nodeId => {
             if (!latestTaskIds.has(nodeId)) {
-                console.log(`[Canvas Sync] Reconcile: Removing node ${nodeId}`);
                 const nodeToRemove = nodesCache[nodeId];
                 if (nodeToRemove) {
                     nodeToRemove.remove();
@@ -760,14 +815,72 @@ async function loadCanvasTasks() {
             }
         });
 
-        // --- 5. Draw All Connections ---
-        // By this point, the DOM and caches are guaranteed to be in sync with Firestore.
-        // It's now safe to draw all lines.
-        console.log("[Canvas Sync] Reconciliation complete. Drawing lines.");
         drawAllLines();
-
     }, (error) => {
-        console.error("Erro de sincronização com o canvas:", error);
+        console.error("Erro de sincronização com o canvas (tasks):", error);
+        showToast("Erro de sincronização com o canvas.");
+    });
+
+    // Load free cards
+    unsubs.canvas_free_cards = onSnapshot(query(freeCardsCollectionRef), (snapshot) => {
+        console.log("[Canvas Sync] Free cards onSnapshot triggered.");
+
+        const latestFreeCards = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FreeCard));
+        freeCardsCache = latestFreeCards;
+        
+        const existingFreeCardNodeIds = new Set(Object.keys(freeCardNodesCache));
+        const latestFreeCardIds = new Set(latestFreeCards.map(fc => fc.id));
+
+        const batch = writeBatch(db);
+        let hasPositionUpdates = false;
+
+        // Reconcile Free Card Nodes
+        latestFreeCards.forEach((freeCard, index) => {
+            let node = freeCardNodesCache[freeCard.id];
+            
+            // Assign an initial position on the canvas if it doesn't have one
+            if (freeCard.x === undefined || freeCard.y === undefined) {
+                const containerWidth = dom.taskCanvasContainer.offsetWidth || 1000;
+                const columns = Math.max(1, Math.floor(containerWidth / 250));
+                freeCard.x = (index % columns) * 250 + 50;
+                freeCard.y = Math.floor(index / columns) * 120 + 200; // Offset below tasks
+                
+                batch.update(doc(freeCardsCollectionRef, freeCard.id), { x: freeCard.x, y: freeCard.y });
+                hasPositionUpdates = true;
+            }
+
+            if (node) {
+                if (canvasState.draggedNode?.dataset.id !== freeCard.id) {
+                    node.style.left = `${freeCard.x}px`;
+                    node.style.top = `${freeCard.y}px`;
+                }
+                const textEl = node.querySelector('.canvas-free-card-node-text') as HTMLParagraphElement;
+                if (textEl && textEl.textContent !== freeCard.text) {
+                    textEl.textContent = freeCard.text;
+                }
+            } else {
+                renderCanvasFreeCardNode(freeCard); 
+            }
+        });
+        
+        if (hasPositionUpdates) {
+             batch.commit().catch(e => console.warn("Falha ao salvar posições iniciais dos free cards durante a sincronização.", e));
+        }
+
+        // Remove old free card nodes
+        existingFreeCardNodeIds.forEach(nodeId => {
+            if (!latestFreeCardIds.has(nodeId)) {
+                const nodeToRemove = freeCardNodesCache[nodeId];
+                if (nodeToRemove) {
+                    nodeToRemove.remove();
+                    delete freeCardNodesCache[nodeId];
+                }
+            }
+        });
+
+        drawAllLines();
+    }, (error) => {
+        console.error("Erro de sincronização com o canvas (free cards):", error);
         showToast("Erro de sincronização com o canvas.");
     });
 }
@@ -790,6 +903,23 @@ function renderCanvasNode(task: Task) {
     dom.taskCanvas.appendChild(node);
 }
 
+function renderCanvasFreeCardNode(freeCard: FreeCard) {
+    const node = document.createElement('div');
+    node.className = 'canvas-free-card-node';
+    node.dataset.id = freeCard.id;
+    node.dataset.type = 'free-card';
+    node.style.left = `${freeCard.x || 0}px`;
+    node.style.top = `${freeCard.y || 0}px`;
+
+    node.innerHTML = `
+        <p class="canvas-free-card-node-text">${freeCard.text}</p>
+        <div class="canvas-free-card-node-link-handle"></div>
+    `;
+
+    freeCardNodesCache[freeCard.id] = node;
+    dom.taskCanvas.appendChild(node);
+}
+
 // Comentários das conexões (em memória)
 const connectionComments: { [key: string]: string } = {};
 
@@ -800,6 +930,7 @@ function drawAllLines() {
     dom.canvasLinesSvg.innerHTML = '';
     if (linkingLine) dom.canvasLinesSvg.appendChild(linkingLine);
 
+    // Draw connections for tasks
     tasksCache.forEach(task => {
         if (task.connections?.length) {
             task.connections.forEach(conn => {
@@ -813,14 +944,13 @@ function drawAllLines() {
                     commentText = conn.comment;
                 }
                 const sourceNode = nodesCache[task.id];
-                const targetNode = nodesCache[targetId];
+                const targetNode = nodesCache[targetId] || freeCardNodesCache[targetId];
                 if (sourceNode && targetNode) {
                     const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
                     const line = createSvgLine(sourceNode, targetNode);
                     group.appendChild(line);
                     // Comentário da conexão
                     if (commentText) {
-                        // ... (igual antes)
                         const sourceX = sourceNode.offsetLeft + sourceNode.offsetWidth;
                         const sourceY = sourceNode.offsetTop + sourceNode.offsetHeight / 2;
                         const targetX = targetNode.offsetLeft;
@@ -845,7 +975,7 @@ function drawAllLines() {
                         const midY = (sourceNode.offsetTop + sourceNode.offsetHeight / 2 + targetNode.offsetTop + targetNode.offsetHeight / 2) / 2;
                         showConnectionCommentInput(task.id, targetId, midX, midY, commentText || '');
                     });
-                    // ... restante igual ...
+                    
                     // Cria o ícone de lixeira (SVG FontAwesome trash)
                     const trashIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
                     trashIcon.setAttribute('width', '20');
@@ -894,7 +1024,10 @@ function drawAllLines() {
                         if (tasksCollectionRef) {
                             // Remove a conexão do array
                             const taskDocRef = doc(tasksCollectionRef, task.id);
-                            const updatedConnections = (task.connections || []).filter((c: string) => c !== targetId);
+                            const updatedConnections = (task.connections || []).filter((c: any) => {
+                                if (typeof c === 'string') return c !== targetId;
+                                return c.targetId !== targetId;
+                            });
                             await updateDoc(taskDocRef, { connections: updatedConnections });
                             showToast('Conexão removida!');
                         }
@@ -902,16 +1035,125 @@ function drawAllLines() {
 
                     group.appendChild(trashIcon);
                     dom.canvasLinesSvg.appendChild(group);
-                    // console.log(`[Canvas Draw] SUCCESS: Line drawn for ${task.id} -> ${targetId}`);
                 } else {
                     console.warn(`[Canvas Draw] FAILED to draw line: Could not find nodes in cache. Source (${task.id}): ${!!sourceNode}, Target (${targetId}): ${!!targetNode}`);
                 }
             });
         }
     });
+
+    // Draw connections for free cards
+    freeCardsCache.forEach(freeCard => {
+        if (freeCard.connections?.length) {
+            freeCard.connections.forEach(conn => {
+                let targetId: string;
+                let commentText: string | undefined;
+                if (typeof conn === 'string') {
+                    targetId = conn;
+                    commentText = undefined;
+                } else {
+                    targetId = conn.targetId;
+                    commentText = conn.comment;
+                }
+                const sourceNode = freeCardNodesCache[freeCard.id];
+                const targetNode = nodesCache[targetId] || freeCardNodesCache[targetId];
+                if (sourceNode && targetNode) {
+                    const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                    const line = createSvgLine(sourceNode, targetNode, false, undefined, true);
+                    group.appendChild(line);
+                    
+                    // Comentário da conexão
+                    if (commentText) {
+                        const sourceX = sourceNode.offsetLeft + sourceNode.offsetWidth;
+                        const sourceY = sourceNode.offsetTop + sourceNode.offsetHeight / 2;
+                        const targetX = targetNode.offsetLeft;
+                        const targetY = targetNode.offsetTop + targetNode.offsetHeight / 2;
+                        const midX = (sourceX + targetX) / 2;
+                        const midY = (sourceY + targetY) / 2;
+                        const textElem = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                        textElem.setAttribute('x', String(midX));
+                        textElem.setAttribute('y', String(midY - 10));
+                        textElem.setAttribute('text-anchor', 'middle');
+                        textElem.setAttribute('fill', '#3b82f6');
+                        textElem.setAttribute('font-size', '13');
+                        textElem.setAttribute('opacity', '0.7');
+                        textElem.setAttribute('pointer-events', 'none');
+                        textElem.textContent = commentText;
+                        group.appendChild(textElem);
+                    }
+                    
+                    // Duplo clique para adicionar/editar comentário
+                    line.addEventListener('dblclick', (e) => {
+                        e.stopPropagation();
+                        const midX = (sourceNode.offsetLeft + sourceNode.offsetWidth + targetNode.offsetLeft) / 2;
+                        const midY = (sourceNode.offsetTop + sourceNode.offsetHeight / 2 + targetNode.offsetTop + targetNode.offsetHeight / 2) / 2;
+                        showConnectionCommentInput(freeCard.id, targetId, midX, midY, commentText || '', true);
+                    });
+                    
+                    // Cria o ícone de lixeira
+                    const trashIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                    trashIcon.setAttribute('width', '20');
+                    trashIcon.setAttribute('height', '20');
+                    trashIcon.setAttribute('viewBox', '0 0 448 512');
+                    trashIcon.setAttribute('class', 'canvas-trash-icon');
+                    trashIcon.style.display = 'none';
+                    trashIcon.style.position = 'absolute';
+                    trashIcon.style.cursor = 'pointer';
+                    trashIcon.innerHTML = `<path fill="#ef4444" d="M135.2 17.7C140.2 7.4 150.5 0 162.3 0h123.4c11.8 0 22.1 7.4 27.1 17.7l19.8 38.3H432c8.8 0 16 7.2 16 16s-7.2 16-16 16h-16l-21.2 339.4c-2.6 41.2-36.7 72.3-77.9 72.3H131.1c-41.2 0-75.3-31.1-77.9-72.3L32 88H16C7.2 88 0 80.8 0 72s7.2-16 16-16h74.4l19.8-38.3zM131.1 464h185.8c23.2 0 42.2-17.5 43.5-40.7L381.2 88H66.8l21.2 335.3c1.3 23.2 20.3 40.7 43.5 40.7zM176 224c8.8 0 16 7.2 16 16v128c0 8.8-7.2 16-16 16s-16-7.2-16-16V240c0-8.8 7.2-16 16-16s16 7.2 16 16z"/>`;
+
+                    const sourceX = sourceNode.offsetLeft + sourceNode.offsetWidth;
+                    const sourceY = sourceNode.offsetTop + sourceNode.offsetHeight / 2;
+                    const targetX = targetNode.offsetLeft;
+                    const targetY = targetNode.offsetTop + targetNode.offsetHeight / 2;
+                    const midX = (sourceX + targetX) / 2;
+                    const midY = (sourceY + targetY) / 2;
+                    trashIcon.setAttribute('x', String(midX - 10));
+                    trashIcon.setAttribute('y', String(midY - 10));
+                    trashIcon.style.pointerEvents = 'auto';
+
+                    let trashHideTimeout: any = null;
+                    group.addEventListener('mouseenter', () => {
+                        if (trashHideTimeout) clearTimeout(trashHideTimeout);
+                        trashIcon.style.display = 'block';
+                    });
+                    group.addEventListener('mouseleave', () => {
+                        trashHideTimeout = setTimeout(() => {
+                            trashIcon.style.display = 'none';
+                        }, 350);
+                    });
+                    trashIcon.addEventListener('mouseenter', () => {
+                        if (trashHideTimeout) clearTimeout(trashHideTimeout);
+                        trashIcon.style.display = 'block';
+                    });
+                    trashIcon.addEventListener('mouseleave', () => {
+                        trashHideTimeout = setTimeout(() => {
+                            trashIcon.style.display = 'none';
+                        }, 350);
+                    });
+                    
+                    // Evento de clique para remover a conexão
+                    trashIcon.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        if (freeCardsCollectionRef) {
+                            const freeCardDocRef = doc(freeCardsCollectionRef, freeCard.id);
+                            const updatedConnections = (freeCard.connections || []).filter((c: any) => {
+                                if (typeof c === 'string') return c !== targetId;
+                                return c.targetId !== targetId;
+                            });
+                            await updateDoc(freeCardDocRef, { connections: updatedConnections });
+                            showToast('Conexão removida!');
+                        }
+                    });
+
+                    group.appendChild(trashIcon);
+                    dom.canvasLinesSvg.appendChild(group);
+                }
+            });
+        }
+    });
 }
 
-function createSvgLine(sourceNode: HTMLElement, targetNode: HTMLElement, isLinkingLine = false, customTargetPoint?: {x: number, y: number}) {
+function createSvgLine(sourceNode: HTMLElement, targetNode: HTMLElement, isLinkingLine = false, customTargetPoint?: {x: number, y: number}, isFreeCard = false) {
     // Adiciona marker de seta ao SVG se ainda não existir
     if (dom.canvasLinesSvg && !dom.canvasLinesSvg.querySelector('marker#arrowhead')) {
         const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
@@ -922,6 +1164,23 @@ function createSvgLine(sourceNode: HTMLElement, targetNode: HTMLElement, isLinki
         `;
         dom.canvasLinesSvg.prepend(defs);
     }
+    
+    // Adiciona marker de seta azul para free cards se ainda não existir
+    if (dom.canvasLinesSvg && !dom.canvasLinesSvg.querySelector('marker#arrowhead-blue')) {
+        const defs = dom.canvasLinesSvg.querySelector('defs');
+        if (defs) {
+            const blueArrow = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+            blueArrow.setAttribute('id', 'arrowhead-blue');
+            blueArrow.setAttribute('markerWidth', '6');
+            blueArrow.setAttribute('markerHeight', '4');
+            blueArrow.setAttribute('refX', '6');
+            blueArrow.setAttribute('refY', '2');
+            blueArrow.setAttribute('orient', 'auto');
+            blueArrow.innerHTML = '<polygon points="0 0, 6 2, 0 4" fill="#3b82f6"/>';
+            defs.appendChild(blueArrow);
+        }
+    }
+    
     const sourceX = sourceNode.offsetLeft + sourceNode.offsetWidth;
     const sourceY = sourceNode.offsetTop + sourceNode.offsetHeight / 2;
     let targetX, targetY;
@@ -935,12 +1194,20 @@ function createSvgLine(sourceNode: HTMLElement, targetNode: HTMLElement, isLinki
     const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     const controlPointOffset = Math.max(50, Math.abs(targetX - sourceX) * 0.3);
     line.setAttribute('d', `M ${sourceX} ${sourceY} C ${sourceX + controlPointOffset} ${sourceY}, ${targetX - controlPointOffset} ${targetY}, ${targetX} ${targetY}`);
-    line.setAttribute('class', isLinkingLine ? 'linking-line' : 'canvas-line');
-    line.setAttribute('stroke', '#6366f1');
+    
+    if (isFreeCard) {
+        line.setAttribute('class', isLinkingLine ? 'linking-line' : 'canvas-free-card-line');
+        line.setAttribute('stroke', '#3b82f6');
+        line.setAttribute('marker-end', 'url(#arrowhead-blue)');
+    } else {
+        line.setAttribute('class', isLinkingLine ? 'linking-line' : 'canvas-line');
+        line.setAttribute('stroke', '#6366f1');
+        line.setAttribute('marker-end', 'url(#arrowhead)');
+    }
+    
     line.setAttribute('stroke-width', isLinkingLine ? '2' : '2');
     line.setAttribute('fill', 'none');
     line.setAttribute('opacity', isLinkingLine ? '0.7' : '1');
-    line.setAttribute('marker-end', 'url(#arrowhead)');
     return line;
 }
 
@@ -1009,6 +1276,12 @@ const setupAppEventListeners = () => {
         if (!dom.canvasTaskPopup.classList.contains('hidden') && !dom.canvasTaskPopup.contains(target) && !(e.target as HTMLElement).closest('.canvas-task-node')) {
             closeCanvasPopup();
         }
+        
+        // Fechar popup de free cards se clicar fora
+        const freeCardPopup = document.getElementById('free-card-popup');
+        if (freeCardPopup && !freeCardPopup.classList.contains('hidden') && !freeCardPopup.contains(target)) {
+            hideFreeCardPopup();
+        }
     });
     eventManager.add(dom.logoutBtn, 'click', async () => { await signOut(auth); dom.userMenuDropdown.classList.add('hidden'); });
     eventManager.add(window, 'online', updateConnectionStatus);
@@ -1016,6 +1289,29 @@ const setupAppEventListeners = () => {
     eventManager.add(dom.viewToggleBtn, 'click', toggleView);
     setupCanvasEventListeners();
     eventManager.add(dom.canvasPopupCloseBtn, 'click', closeCanvasPopup);
+    
+    // Event listeners para free cards
+    const addFreeCardBtn = document.getElementById('add-free-card-btn');
+    console.log('[Free Card] Botão principal encontrado:', !!addFreeCardBtn);
+    if (addFreeCardBtn) {
+        eventManager.add(addFreeCardBtn, 'click', showFreeCardPopup);
+        console.log('[Free Card] Event listener adicionado ao botão principal');
+    }
+    
+    const addFreeCardBtnModal = document.getElementById('add-free-card-btn-modal');
+    console.log('[Free Card] Botão do modal encontrado:', !!addFreeCardBtnModal);
+    if (addFreeCardBtnModal) {
+        eventManager.add(addFreeCardBtnModal, 'click', handleAddFreeCard);
+        console.log('[Free Card] Event listener adicionado ao botão do modal');
+    }
+    
+    const closeFreeCardPopupBtn = document.getElementById('close-free-card-popup-btn');
+    console.log('[Free Card] Botão de fechar encontrado:', !!closeFreeCardPopupBtn);
+    if (closeFreeCardPopupBtn) {
+        eventManager.add(closeFreeCardPopupBtn, 'click', hideFreeCardPopup);
+        console.log('[Free Card] Event listener adicionado ao botão de fechar');
+    }
+    
     // Adiciona evento para abrir/fechar o dropdown do menu do usuário
     if (dom.userMenuTrigger) {
         eventManager.add(dom.userMenuTrigger, 'click', (e: MouseEvent) => {
@@ -1048,12 +1344,22 @@ function setupCanvasEventListeners() {
 
     const onMouseDown = (e: MouseEvent) => {
         const target = e.target as HTMLElement;
-        const node = target.closest('.canvas-task-node') as HTMLElement;
+        const taskNode = target.closest('.canvas-task-node') as HTMLElement;
+        const freeCardNode = target.closest('.canvas-free-card-node') as HTMLElement;
+        const node = taskNode || freeCardNode;
         
-        if (target.classList.contains('canvas-task-node-link-handle') && node) {
+        if (target.classList.contains('canvas-task-node-link-handle') && taskNode) {
             e.stopPropagation();
             canvasState.isLinking = true;
-            canvasState.linkStartNodeId = node.dataset.id || null;
+            canvasState.linkStartNodeId = taskNode.dataset.id || null;
+            container.classList.add('linking-mode');
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            line.setAttribute('class', 'linking-line');
+            dom.canvasLinesSvg.appendChild(line);
+        } else if (target.classList.contains('canvas-free-card-node-link-handle') && freeCardNode) {
+            e.stopPropagation();
+            canvasState.isLinking = true;
+            canvasState.linkStartNodeId = freeCardNode.dataset.id || null;
             container.classList.add('linking-mode');
             const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
             line.setAttribute('class', 'linking-line');
@@ -1112,7 +1418,9 @@ function setupCanvasEventListeners() {
     const onMouseUp = async (e: MouseEvent) => {
         try {
             const target = e.target as HTMLElement;
-            const targetNodeEl = target.closest('.canvas-task-node') as HTMLElement;
+            const targetTaskNode = target.closest('.canvas-task-node') as HTMLElement;
+            const targetFreeCardNode = target.closest('.canvas-free-card-node') as HTMLElement;
+            const targetNodeEl = targetTaskNode || targetFreeCardNode;
 
             if (canvasState.isLinking && canvasState.linkStartNodeId) {
                 console.log(`[Canvas] Linking ended. Start node: ${canvasState.linkStartNodeId}`);
@@ -1121,37 +1429,43 @@ function setupCanvasEventListeners() {
 
                 if (targetNodeEl && targetNodeEl.dataset.id !== canvasState.linkStartNodeId) {
                     const targetId = targetNodeEl.dataset.id;
-                    // Corrigir: calcular o ponto do mouse relativo ao card de destino
-                    const rect = targetNodeEl.getBoundingClientRect();
-                    const containerRect = dom.taskCanvasContainer.getBoundingClientRect();
-                    const offsetX = (e.clientX - rect.left);
-                    const offsetY = (e.clientY - rect.top);
-                    const targetX = targetNodeEl.offsetLeft + offsetX;
-                    const targetY = targetNodeEl.offsetTop + offsetY;
-                    // Aqui você pode usar targetX/targetY para desenhar a linha customizada, se quiser persistir, salve esses valores junto com a conexão
-                    if (targetId && tasksCollectionRef) {
-                        await updateDoc(doc(tasksCollectionRef, canvasState.linkStartNodeId), {
-                            connections: arrayUnion(targetId)
-                        });
+                    const isStartNodeFreeCard = canvasState.linkStartNodeId && freeCardNodesCache[canvasState.linkStartNodeId];
+                    
+                    if (targetId) {
+                        if (isStartNodeFreeCard && freeCardsCollectionRef) {
+                            await updateDoc(doc(freeCardsCollectionRef, canvasState.linkStartNodeId), {
+                                connections: arrayUnion(targetId)
+                            });
+                        } else if (tasksCollectionRef) {
+                            await updateDoc(doc(tasksCollectionRef, canvasState.linkStartNodeId), {
+                                connections: arrayUnion(targetId)
+                            });
+                        }
                         console.log(`[Canvas] Firestore update successful.`);
                     }
                 } else {
                     console.log(`[Canvas] No valid target node found.`);
                 }
             } else if (canvasState.isDragging && canvasState.draggedNode) {
-                const taskId = canvasState.draggedNode.dataset.id;
+                const nodeId = canvasState.draggedNode.dataset.id;
+                const isFreeCard = canvasState.draggedNode.dataset.type === 'free-card';
                 const dx = e.clientX - canvasState.startX;
                 const dy = e.clientY - canvasState.startY;
 
                 if (Math.abs(dx) > 5 || Math.abs(dy) > 5) { // It's a drag
-                    if (taskId && tasksCollectionRef) {
+                    if (nodeId) {
                         const finalX = canvasState.draggedNode.offsetLeft;
                         const finalY = canvasState.draggedNode.offsetTop;
-                        await updateDoc(doc(tasksCollectionRef, taskId), { x: finalX, y: finalY });
+                        
+                        if (isFreeCard && freeCardsCollectionRef) {
+                            await updateDoc(doc(freeCardsCollectionRef, nodeId), { x: finalX, y: finalY });
+                        } else if (tasksCollectionRef) {
+                            await updateDoc(doc(tasksCollectionRef, nodeId), { x: finalX, y: finalY });
+                        }
                     }
                 } else { // It's a click
-                    if (taskId) {
-                        openCanvasPopup(taskId, canvasState.draggedNode);
+                    if (nodeId && !isFreeCard) {
+                        openCanvasPopup(nodeId, canvasState.draggedNode);
                     }
                 }
             }
@@ -1224,7 +1538,9 @@ const cleanupApp = () => {
     if (dom.canvasLinesSvg) dom.canvasLinesSvg.innerHTML = '';
     
     nodesCache = {};
+    freeCardNodesCache = {};
     tasksCache = [];
+    freeCardsCache = [];
     currentView = 'list';
     canvasState = {
         isPanning: false,
@@ -1249,6 +1565,16 @@ const setupFirestoreCollections = () => {
     tasksCollectionRef = collection(db, `${basePath}/tasks`);
     notesCollectionRef = collection(db, `${basePath}/notes`);
     categoriesCollectionRef = collection(db, `${basePath}/categories`);
+    freeCardsCollectionRef = collection(db, `${basePath}/freeCards`);
+    
+    console.log('[Firestore] Collections configuradas:', {
+        userId,
+        basePath,
+        tasksCollectionRef: !!tasksCollectionRef,
+        notesCollectionRef: !!notesCollectionRef,
+        categoriesCollectionRef: !!categoriesCollectionRef,
+        freeCardsCollectionRef: !!freeCardsCollectionRef
+    });
 };
 
 const loadAndRenderAll = () => {
@@ -1256,6 +1582,16 @@ const loadAndRenderAll = () => {
     displayCurrentDate();
     updateToggleCompletedButton();
     loadCategories();
+    
+    // Configurar estado inicial do botão de free card (oculto na visualização de lista)
+    const addFreeCardBtn = document.getElementById('add-free-card-btn');
+    if (addFreeCardBtn) {
+        addFreeCardBtn.classList.toggle('hidden', currentView === 'list');
+        console.log('[Free Card] Botão encontrado, estado inicial:', currentView === 'list' ? 'oculto' : 'visível');
+    } else {
+        console.warn('[Free Card] Botão não encontrado no DOM');
+    }
+    
     if (currentView === 'list') {
         loadTasks();
     } else {
@@ -1337,6 +1673,35 @@ function showCategoryPopup() {
 function hideCategoryPopup() {
     dom.categoryPopup.classList.add('hidden');
 }
+
+function showFreeCardPopup() {
+    const popup = document.getElementById('free-card-popup');
+    if (popup) {
+        popup.classList.remove('hidden');
+        popup.style.display = 'flex';
+        popup.style.zIndex = '99999';
+        // Força novamente após 50ms (caso outro código sobrescreva)
+        setTimeout(() => {
+            popup.classList.remove('hidden');
+            popup.style.display = 'flex';
+            popup.style.zIndex = '99999';
+        }, 50);
+        const input = document.getElementById('free-card-input') as HTMLTextAreaElement;
+        if (input) {
+            input.value = '';
+            setTimeout(() => input.focus(), 100);
+        }
+    }
+}
+
+function hideFreeCardPopup() {
+    const popup = document.getElementById('free-card-popup');
+    if (popup) {
+        popup.classList.add('hidden');
+        popup.style.display = '';
+        popup.style.zIndex = '';
+    }
+}
 if (dom.categoryPopupCancel) dom.categoryPopupCancel.onclick = hideCategoryPopup;
 if (dom.categoryPopupAdd) dom.categoryPopupAdd.onclick = async () => {
     const name = dom.categoryPopupInput.value.trim();
@@ -1351,6 +1716,20 @@ if (dom.categoryPopupInput) dom.categoryPopupInput.addEventListener('keydown', (
     if (e.key === 'Enter') (dom.categoryPopupAdd as HTMLButtonElement).click();
     if (e.key === 'Escape') hideCategoryPopup();
 });
+
+// Event listener para o input do free card
+const freeCardInput = document.getElementById('free-card-input') as HTMLTextAreaElement;
+if (freeCardInput) {
+    freeCardInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleAddFreeCard();
+        }
+        if (e.key === 'Escape') {
+            hideFreeCardPopup();
+        }
+    });
+}
 
 // --- Theme ---
 function applyTheme(theme: string) {
@@ -1478,7 +1857,7 @@ if (advancedTaskFilterSelect) {
 }
 
 // Função para mostrar input de comentário sobre a linha
-function showConnectionCommentInput(sourceId: string, targetId: string, x: number, y: number, initial: string) {
+function showConnectionCommentInput(sourceId: string, targetId: string, x: number, y: number, initial: string, isFreeCard = false) {
     // Remove qualquer input anterior
     const old = document.getElementById('canvas-conn-comment-input');
     if (old) old.remove();
@@ -1494,18 +1873,33 @@ function showConnectionCommentInput(sourceId: string, targetId: string, x: numbe
     input.style.width = '120px';
     input.style.zIndex = '10000';
     input.style.background = '#fff';
-    input.style.border = '1px solid #6366f1';
+    input.style.border = isFreeCard ? '1px solid #3b82f6' : '1px solid #6366f1';
     input.style.borderRadius = '6px';
     input.style.padding = '2px 8px';
     input.style.fontSize = '13px';
-    input.style.boxShadow = '0 2px 8px rgba(99,102,241,0.08)';
+    input.style.boxShadow = isFreeCard ? '0 2px 8px rgba(59,130,246,0.08)' : '0 2px 8px rgba(99,102,241,0.08)';
     input.style.opacity = '0.95';
     input.style.outline = 'none';
     input.style.pointerEvents = 'auto';
     input.addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
             // Persistir comentário no Firestore
-            if (tasksCollectionRef) {
+            if (isFreeCard && freeCardsCollectionRef) {
+                const freeCardDocRef = doc(freeCardsCollectionRef, sourceId);
+                const freeCard = freeCardsCache.find(fc => fc.id === sourceId);
+                if (freeCard) {
+                    let newConnections: any[] = [];
+                    if (freeCard.connections) {
+                        newConnections = freeCard.connections.map(conn => {
+                            if ((typeof conn === 'string' && conn === targetId) || (typeof conn === 'object' && conn.targetId === targetId)) {
+                                return { targetId, comment: input.value.trim() };
+                            }
+                            return conn;
+                        });
+                    }
+                    await updateDoc(freeCardDocRef, { connections: newConnections });
+                }
+            } else if (tasksCollectionRef) {
                 const taskDocRef = doc(tasksCollectionRef, sourceId);
                 const task = tasksCache.find(t => t.id === sourceId);
                 if (task) {
@@ -1530,113 +1924,5 @@ function showConnectionCommentInput(sourceId: string, targetId: string, x: numbe
     setTimeout(() => input.focus(), 30);
     dom.taskCanvasContainer.appendChild(input);
 }
-
-// Cards livres do canvas (não tarefas)
-let freeCanvasCards: { id: string, x: number, y: number, text: string }[] = [];
-
-function renderFreeCanvasCards() {
-    // Remove todos os cards livres antigos
-    const old = dom.taskCanvas.querySelectorAll('.canvas-free-card');
-    old.forEach(el => el.remove());
-    freeCanvasCards.forEach(card => {
-        const el = document.createElement('div');
-        el.className = 'canvas-free-card';
-        el.style.left = card.x + 'px';
-        el.style.top = card.y + 'px';
-        el.textContent = card.text || 'Novo card';
-        el.dataset.id = card.id;
-        el.style.position = 'absolute';
-        el.style.border = '2px solid #2563eb';
-        el.style.background = '#f8fafc';
-        el.style.color = '#1e293b';
-        el.style.borderRadius = '0.75rem';
-        el.style.padding = '10px 18px';
-        el.style.fontSize = '1rem';
-        el.style.minWidth = '120px';
-        el.style.cursor = 'move';
-        el.style.zIndex = '50';
-        // Duplo clique para editar
-        el.ondblclick = (e) => {
-            e.stopPropagation();
-            showEditFreeCardInput(card.id, card.x, card.y, card.text);
-        };
-        // Drag
-        let isDragging = false, startX = 0, startY = 0, origX = 0, origY = 0;
-        el.onmousedown = (e) => {
-            isDragging = true;
-            startX = e.clientX;
-            startY = e.clientY;
-            origX = card.x;
-            origY = card.y;
-            document.onmousemove = (ev) => {
-                if (isDragging) {
-                    card.x = origX + (ev.clientX - startX);
-                    card.y = origY + (ev.clientY - startY);
-                    el.style.left = card.x + 'px';
-                    el.style.top = card.y + 'px';
-                }
-            };
-            document.onmouseup = () => {
-                isDragging = false;
-                document.onmousemove = null;
-                document.onmouseup = null;
-            };
-        };
-        dom.taskCanvas.appendChild(el);
-    });
-}
-function showEditFreeCardInput(id: string, x: number, y: number, initial: string) {
-    const old = document.getElementById('canvas-free-card-input');
-    if (old) old.remove();
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.value = initial;
-    input.id = 'canvas-free-card-input';
-    input.style.position = 'absolute';
-    input.style.left = (x - 10) + 'px';
-    input.style.top = (y - 10) + 'px';
-    input.style.width = '160px';
-    input.style.zIndex = '10000';
-    input.style.background = '#fff';
-    input.style.border = '2px solid #2563eb';
-    input.style.borderRadius = '0.75rem';
-    input.style.padding = '6px 12px';
-    input.style.fontSize = '1rem';
-    input.style.boxShadow = '0 2px 8px rgba(37,99,235,0.08)';
-    input.style.opacity = '0.98';
-    input.style.outline = 'none';
-    input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            const card = freeCanvasCards.find(c => c.id === id);
-            if (card) card.text = input.value.trim();
-            input.remove();
-            renderFreeCanvasCards();
-        } else if (e.key === 'Escape') {
-            input.remove();
-        }
-    });
-    setTimeout(() => input.focus(), 30);
-    dom.taskCanvasContainer.appendChild(input);
-}
-// Adicionar evento de duplo clique no canvas para criar card livre
-if (dom.taskCanvas) {
-    dom.taskCanvas.addEventListener('dblclick', (e: MouseEvent) => {
-        // Só cria se não clicar em cima de um card de tarefa
-        const target = e.target as HTMLElement;
-        if (target.classList.contains('canvas-task-node')) return;
-        const rect = dom.taskCanvas.getBoundingClientRect();
-        const x = (e.clientX - rect.left);
-        const y = (e.clientY - rect.top);
-        freeCanvasCards.push({ id: 'free_' + Date.now(), x, y, text: '' });
-        renderFreeCanvasCards();
-        showEditFreeCardInput(freeCanvasCards[freeCanvasCards.length - 1].id, x, y, '');
-    });
-}
-// Renderizar os cards livres sempre que o canvas for redesenhado
-const oldDrawAllLines = drawAllLines;
-drawAllLines = function() {
-    oldDrawAllLines();
-    renderFreeCanvasCards();
-};
 
 start();

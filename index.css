@@ -181,7 +181,22 @@ html.dark #task-canvas-container {
     z-index: 10;
     user-select: none;
 }
-.canvas-task-node:active {
+
+.canvas-free-card-node {
+    position: absolute;
+    cursor: grab;
+    padding: 12px;
+    border-radius: 8px;
+    background-color: white;
+    border: 2px solid #3b82f6;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    width: 220px;
+    transition: box-shadow 0.2s, background-color 0.2s;
+    z-index: 10;
+    user-select: none;
+}
+.canvas-task-node:active,
+.canvas-free-card-node:active {
     cursor: grabbing;
     box-shadow: 0 8px 16px rgba(0,0,0,0.15);
     z-index: 20;
@@ -192,6 +207,10 @@ html.dark #task-canvas-container {
     opacity: 0.7;
 }
 .canvas-task-node-text { font-weight: 500; }
+.canvas-free-card-node-text { 
+    font-weight: 500; 
+    color: #1e40af;
+}
 /* Handle de ligação dos cards no canvas */
 .canvas-task-node-link-handle {
   width: 18px;
@@ -208,12 +227,39 @@ html.dark #task-canvas-container {
   box-shadow: 0 0 0 2px #6366f1;
   transition: box-shadow 0.2s;
 }
+
+.canvas-free-card-node-link-handle {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #3b82f6;
+  border: 2px solid #fff;
+  position: absolute;
+  right: -9px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: crosshair;
+  z-index: 30;
+  box-shadow: 0 0 0 2px #3b82f6;
+  transition: box-shadow 0.2s;
+}
 .canvas-task-node-link-handle:hover {
   box-shadow: 0 0 0 4px #a5b4fc;
 }
 
+.canvas-free-card-node-link-handle:hover {
+  box-shadow: 0 0 0 4px #93c5fd;
+}
+
 .canvas-line, .linking-line {
   stroke: #6366f1;
+  stroke-width: 2;
+  fill: none;
+  opacity: 1;
+}
+
+.canvas-free-card-line {
+  stroke: #3b82f6;
   stroke-width: 2;
   fill: none;
   opacity: 1;
@@ -228,9 +274,18 @@ html.dark #task-canvas-container {
   box-shadow: 0 0 0 6px #6366f1;
 }
 
+.linking-mode .canvas-free-card-node-link-handle {
+  box-shadow: 0 0 0 6px #3b82f6;
+}
+
 html.dark .canvas-task-node {
     background-color: #1e293b;
     border-color: #475569;
+}
+
+html.dark .canvas-free-card-node {
+    background-color: #1e293b;
+    border-color: #3b82f6;
 }
 html.dark .canvas-task-node.completed-node {
     background-color: #164e33;
@@ -240,10 +295,26 @@ html.dark .canvas-task-node-link-handle {
     background-color: #818cf8;
     border-color: #1e293b;
 }
+
+html.dark .canvas-free-card-node-link-handle {
+    background-color: #60a5fa;
+    border-color: #1e293b;
+}
+
+html.dark .canvas-free-card-node-text {
+    color: #93c5fd;
+}
 html.dark .canvas-line { stroke: #6b7280; }
 html.dark .linking-line { stroke: #818cf8; }
+html.dark .canvas-free-card-line { stroke: #60a5fa; }
 
 #task-canvas-container.linking-mode { cursor: crosshair; }
+
+/* Botão de free card */
+#add-free-card-btn {
+    position: relative;
+    z-index: 1000;
+}
 
 #canvas-task-popup {
   z-index: 30;

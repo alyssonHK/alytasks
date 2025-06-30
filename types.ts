@@ -20,6 +20,15 @@ export interface Task {
     connections?: (string | { targetId: string, comment?: string })[];
 }
 
+export interface FreeCard {
+    id: string;
+    text: string;
+    createdAt: Timestamp;
+    x?: number;
+    y?: number;
+    connections?: (string | { targetId: string, comment?: string })[];
+}
+
 export interface Note {
     id: string;
     text: string;
