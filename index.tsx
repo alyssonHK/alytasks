@@ -1845,6 +1845,7 @@ if (dom.showRegisterBtn) dom.showRegisterBtn.onclick = showRegister;
 if (dom.showLoginBtn) dom.showLoginBtn.onclick = showLogin;
 if (dom.loginForm) dom.loginForm.onsubmit = async (e) => {
     e.preventDefault();
+    console.log('[DEBUG] Tentando logar...'); // <-- Adicionado para debug
     dom.loginError.textContent = '';
     const email = (document.getElementById('login-email') as HTMLInputElement).value.trim();
     const password = (document.getElementById('login-password') as HTMLInputElement).value;
