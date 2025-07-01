@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "build:gh-pages": "vite build --config vite.config.gh-pages.ts",
+    "preview": "vite preview --host 0.0.0.0",
+    "preview:gh-pages": "vite preview --config vite.config.gh-pages.ts"
   },
   "dependencies": {
     "@google/genai": "^1.7.0",

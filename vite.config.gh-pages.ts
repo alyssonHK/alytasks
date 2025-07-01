@@ -13,11 +13,16 @@ export default defineConfig(({ mode }) => {
           '@': path.resolve(__dirname, '.'),
         }
       },
-      server: {
-        host: '0.0.0.0', // Aceita conexões de qualquer IP
-        port: 5173, // Porta padrão do Vite
-        strictPort: true, // Falha se a porta estiver ocupada
-      },
-      base: process.env.NODE_ENV === 'production' ? '/alytasks/' : '/', // Base path para GitHub Pages
+      base: '/alytasks/', // Base path para GitHub Pages (nome do repositório)
+      build: {
+        outDir: 'dist',
+        assetsDir: 'assets',
+        sourcemap: false,
+        rollupOptions: {
+          output: {
+            manualChunks: undefined,
+          },
+        },
+      }
     };
-});
+}); 
