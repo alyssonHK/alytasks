@@ -2183,4 +2183,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
 console.log('[DEBUG] loginForm:', document.getElementById('login-form'));
 
+import { auth } from './firebase';
+console.log('[DEBUG] Firebase auth:', auth);
+
+// ... existing code ...
+if (dom.loginForm) {
+    dom.loginForm.onsubmit = async (e) => {
+        e.preventDefault();
+        console.log('[DEBUG] Clique no botão Entrar');
+        dom.loginError.textContent = '';
+        const email = (document.getElementById('login-email') as HTMLInputElement).value.trim();
+        const password = (document.getElementById('login-password') as HTMLInputElement).value;
+        console.log('[DEBUG] Dados do formulário:', { email, passwordLength: password.length });
+        try {
+            console.log('[DEBUG] Chamando signInWithEmailAndPassword...');
+            const userCredential = await signInWithEmailAndPassword(auth, email, password);
+            console.log('[DEBUG] Login bem-sucedido:', userCredential);
+        } catch (err) {
+            console.error('[DEBUG] Erro no login:', err);
+            dom.loginError.textContent = 'E-mail ou senha inválidos.';
+        }
+    };
+    console.log('[DEBUG] Listener de login adicionado:', !!dom.loginForm);
+} else {
+    console.log('[DEBUG] loginForm NÃO encontrado');
+}
+// ... existing code ...
+
 start();
