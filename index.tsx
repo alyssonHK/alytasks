@@ -1845,7 +1845,7 @@ if (dom.showRegisterBtn) dom.showRegisterBtn.onclick = showRegister;
 if (dom.showLoginBtn) dom.showLoginBtn.onclick = showLogin;
 if (dom.loginForm) dom.loginForm.onsubmit = async (e) => {
     e.preventDefault();
-    console.log('[DEBUG] Tentando logar...'); // <-- Adicionado para debug
+    console.log('[DEBUG] Tentando logar...');
     dom.loginError.textContent = '';
     const email = (document.getElementById('login-email') as HTMLInputElement).value.trim();
     const password = (document.getElementById('login-password') as HTMLInputElement).value;
@@ -2174,5 +2174,13 @@ function getCardSide(node: HTMLElement, mouseX: number, mouseY: number): 'top' |
     if (min === leftDist) return 'left';
     return 'right';
 }
+
+console.log('[DEBUG] JS principal carregado');
+
+document.addEventListener('DOMContentLoaded', () => {
+  console.log('[DEBUG] DOM pronto');
+});
+
+console.log('[DEBUG] loginForm:', document.getElementById('login-form'));
 
 start();

@@ -18,6 +18,6 @@ export default defineConfig(({ mode }) => {
         port: 5173, // Porta padrão do Vite
         strictPort: true, // Falha se a porta estiver ocupada
       },
-      base: process.env.NODE_ENV === 'production' ? '/alytasks/' : '/', // Base path para GitHub Pages
+      base: mode === 'production' ? '/alytasks/' : '/', // Base path para GitHub Pages
     };
 });
