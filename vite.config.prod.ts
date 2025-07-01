@@ -14,9 +14,14 @@ export default defineConfig(({ mode }) => {
         }
       },
       server: {
-        host: '0.0.0.0', // Aceita conexões de qualquer IP
-        port: 5173, // Porta padrão do Vite
-        strictPort: true, // Falha se a porta estiver ocupada
+        host: '0.0.0.0',
+        port: 5173,
+        strictPort: true,
+      },
+      preview: {
+        host: '0.0.0.0',
+        port: 4173,
+        strictPort: true,
       }
     };
-});
+}); 
