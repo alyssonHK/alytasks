@@ -6,7 +6,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { Task, Note, Subtask } from './types.js';
 import { db, appId } from './firebase.js';
-import { collection, getDocs, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { collection, getDocs, query, where } from "firebase/firestore";
 
 // The API key is handled by the execution environment.
 const apiKey = process.env.API_KEY || "";

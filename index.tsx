@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 
-import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { doc, collection, onSnapshot, addDoc, updateDoc, deleteDoc, query, where, getDocs, setDoc, Timestamp, increment, arrayUnion, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "firebase/auth";
+import { doc, collection, onSnapshot, addDoc, updateDoc, deleteDoc, query, where, getDocs, setDoc, Timestamp, increment, arrayUnion, writeBatch } from "firebase/firestore";
 import { auth, db, appId, initializeOfflinePersistence } from './firebase.js';
 import { getAiSummary } from './gemini.js';
 import { Task, Note, Subtask, FreeCard } from "./types.js";
@@ -2175,39 +2175,5 @@ function getCardSide(node: HTMLElement, mouseX: number, mouseY: number): 'top' |
     return 'right';
 }
 
-console.log('[DEBUG] JS principal carregado');
-
-document.addEventListener('DOMContentLoaded', () => {
-  console.log('[DEBUG] DOM pronto');
-});
-
-console.log('[DEBUG] loginForm:', document.getElementById('login-form'));
-
-import { auth } from './firebase';
-console.log('[DEBUG] Firebase auth:', auth);
-
-// ... existing code ...
-if (dom.loginForm) {
-    dom.loginForm.onsubmit = async (e) => {
-        e.preventDefault();
-        console.log('[DEBUG] Clique no botão Entrar');
-        dom.loginError.textContent = '';
-        const email = (document.getElementById('login-email') as HTMLInputElement).value.trim();
-        const password = (document.getElementById('login-password') as HTMLInputElement).value;
-        console.log('[DEBUG] Dados do formulário:', { email, passwordLength: password.length });
-        try {
-            console.log('[DEBUG] Chamando signInWithEmailAndPassword...');
-            const userCredential = await signInWithEmailAndPassword(auth, email, password);
-            console.log('[DEBUG] Login bem-sucedido:', userCredential);
-        } catch (err) {
-            console.error('[DEBUG] Erro no login:', err);
-            dom.loginError.textContent = 'E-mail ou senha inválidos.';
-        }
-    };
-    console.log('[DEBUG] Listener de login adicionado:', !!dom.loginForm);
-} else {
-    console.log('[DEBUG] loginForm NÃO encontrado');
-}
-// ... existing code ...
-
+// Inicializar a aplicação
 start();
