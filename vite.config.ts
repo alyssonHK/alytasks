@@ -21,3 +21,4 @@ export default defineConfig(({ mode }) => {
       base: mode === 'production' ? '/alytasks/' : '/', // Base path para GitHub Pages
     };
 });
+
