@@ -11,8 +11,8 @@
     "preview:gh-pages": "vite preview --config vite.config.gh-pages.ts"
   },
   "dependencies": {
-    "@google/genai": "^1.7.0",
-    "firebase": "^11.10.0"
+    "firebase": "^11.10.0",
+    "openai": "^5.8.2"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

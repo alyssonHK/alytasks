@@ -1,16 +1,11 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import { GoogleGenAI } from "@google/genai";
+import { Configuration, OpenAIApi } from "openai";
 import { Task, Note, Subtask } from './types.js';
 import { db, appId } from './firebase.js';
 import { collection, getDocs, query, where } from "firebase/firestore";
 
-// The API key is handled by the execution environment.
-const apiKey = process.env.API_KEY || "";
-const ai = new GoogleGenAI({ apiKey });
+const apiKey = process.env.OPENAI_API_KEY || "";
+const configuration = new Configuration({ apiKey });
+const openai = new OpenAIApi(configuration);
 
 const fetchSubtasksForTask = async (userId: string, taskId: string): Promise<Subtask[]> => {
     if (!userId) return [];
@@ -27,10 +22,10 @@ const fetchSubtasksForTask = async (userId: string, taskId: string): Promise<Sub
 
 export const getAiSummary = async (userId: string, tasks: Task[], notes: Note[]): Promise<string> => {
     if (!apiKey) {
-        return "### Erro de Configuração\nChave de API do Gemini não configurada. A análise por IA está desativada.";
+        return "### Erro de Configuração\nChave de API do OpenAI não configurada. A análise por IA está desativada.";
     }
 
-    const model = 'gemini-2.5-flash-preview-04-17';
+    const model = 'gpt-3.5-turbo';
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -71,15 +66,18 @@ export const getAiSummary = async (userId: string, tasks: Task[], notes: Note[])
     `;
 
     try {
-        const response = await ai.models.generateContent({
+        const response = await openai.createChatCompletion({
             model: model,
-            contents: prompt,
+            messages: [
+                { role: "system", content: "Você é um assistente de produtividade especialista." },
+                { role: "user", content: prompt }
+            ],
+            temperature: 0.7,
+            max_tokens: 800,
         });
-        
-        return response.text;
-
+        return response.data.choices[0].message?.content || "Erro: resposta vazia da IA.";
     } catch (error) {
-        console.error("Error calling Gemini API:", error);
+        console.error("Error calling OpenAI API:", error);
         throw new Error("Desculpe, ocorreu um erro ao gerar a análise de IA. Verifique sua chave de API e tente novamente.");
     }
-};
+}; 

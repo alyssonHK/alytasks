@@ -6,7 +6,7 @@
 import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "firebase/auth";
 import { doc, collection, onSnapshot, addDoc, updateDoc, deleteDoc, query, where, getDocs, setDoc, Timestamp, increment, arrayUnion, writeBatch } from "firebase/firestore";
 import { auth, db, appId, initializeOfflinePersistence } from './firebase.js';
-import { getAiSummary } from './gemini.js';
+import { getAiSummary } from './gpt.js';
 import { Task, Note, Subtask, FreeCard } from "./types.js";
 
 // TypeScript declaration for the 'marked' library loaded from CDN
@@ -1995,7 +1995,7 @@ async function analyzeWithAI() {
         showToast("A análise com IA requer uma conexão com a internet.");
         return;
     };
-    dom.aiAnalyzeContent.innerHTML = 'Analisando com Gemini...';
+    dom.aiAnalyzeContent.innerHTML = 'Analisando com GPT...';
     dom.aiAnalyzeModal.classList.remove('hidden');
     
     try {
