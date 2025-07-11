@@ -30,7 +30,7 @@ export const getAiSummary = async (userId: string, tasks: Task[], notes: Note[])
         return "### Erro de Configuração\nChave de API do Gemini não configurada. A análise por IA está desativada.";
     }
 
-    const model = 'gemini-2.5-flash-preview-04-17';
+    const model = 'gemini-2.5-flash-latest';
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
